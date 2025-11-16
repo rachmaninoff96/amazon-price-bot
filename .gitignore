@@ -1,0 +1,5 @@
+.venv/
+__pycache__/
+watches.json
+.env
+
