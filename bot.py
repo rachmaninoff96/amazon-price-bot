@@ -12,6 +12,8 @@ from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
+from aiohttp import web
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 # ================ MOCK "stile Keepa" ================
 def mock_prices_from_asin(asin: str):
@@ -101,6 +103,9 @@ if not TOKEN:
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+WEBHOOK_PATH = f"/webhook/{TOKEN}"              # percorso interno
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")          # base URL (la metteremo su Render)
+PORT = int(os.getenv("PORT", "8080"))           # porta che passa Render
 
 # ================ UI HELPERS ================
 def kb_home():
@@ -350,12 +355,39 @@ async def price_watcher():
             pass
         await asyncio.sleep(60)
 
-# ================ MAIN ================
-async def main():
-    print("Bot in esecuzione…")
+# ================ MAIN (WEBHOOK) ================
+
+async def on_startup(app: web.Application):
+    # Configura il webhook su Telegram
+    if WEBHOOK_URL:
+        full_url = WEBHOOK_URL + WEBHOOK_PATH
+        print(f"Imposto webhook: {full_url}")
+        await bot.set_webhook(full_url)
+    else:
+        print("ATTENZIONE: WEBHOOK_URL non impostata, il bot non riceverà aggiornamenti.")
+
+    # Avvia il watcher prezzi in background
     asyncio.create_task(price_watcher())
-    await dp.start_polling(bot)
+    print("Bot in esecuzione (webhook)...")
+
+async def on_shutdown(app: web.Application):
+    print("Rimuovo webhook...")
+    await bot.delete_webhook()
+
+def main():
+    app = web.Application()
+
+    # Collega aiogram al server aiohttp
+    SimpleRequestHandler(dp, bot).register(app, path=WEBHOOK_PATH)
+    setup_application(app, dp, bot=bot)
+
+    # Hook di startup/shutdown
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+
+    # Avvia server web
+    web.run_app(app, host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
 
