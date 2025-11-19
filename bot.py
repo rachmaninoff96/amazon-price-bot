@@ -1,14 +1,12 @@
-
 import os
-import threading
-from flask import Flask
 import re
 import asyncio
 import time
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional          # <--- AGGIUNGI QUESTA
+from typing import Optional
+
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery
@@ -41,8 +39,10 @@ def mock_prices_from_asin(asin: str):
     likely_days = 1 + (base % 7)  # 1..7 giorni
     return price_now, lowest_90, forecast, lo, hi, min_date, likely_days
 
+
 def affiliate_link_it(asin: str, tag: str = "tuo-tag-21"):
     return f"https://www.amazon.it/dp/{asin}?tag={tag}"
+
 
 def auto_short_name_from_url(url: str, asin: str) -> str:
     """
@@ -72,8 +72,10 @@ def auto_short_name_from_url(url: str, asin: str) -> str:
         pass
     return f"Prodotto {asin}"
 
+
 # ================ PERSISTENZA SU FILE ================
 DATA_PATH = Path("watches.json")
+
 
 def load_state():
     if DATA_PATH.exists():
@@ -85,11 +87,13 @@ def load_state():
             return {}
     return {}
 
+
 def save_state(state):
     tmp = DATA_PATH.with_suffix(".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2, default=str)
     tmp.replace(DATA_PATH)
+
 
 # ================ STATO ================
 PENDING_THRESHOLD = {}   # chat_id -> asin
@@ -105,6 +109,7 @@ if not TOKEN:
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+
 WEBHOOK_PATH = f"/webhook/{TOKEN}"              # percorso interno
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")          # base URL (la metteremo su Render)
 PORT = int(os.getenv("PORT", "8080"))           # porta che passa Render
@@ -118,6 +123,7 @@ def kb_home():
     kb.adjust(1)
     return kb.as_markup()
 
+
 def kb_product_actions(asin: str):
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ Imposta soglia", callback_data=f"watch:{asin}")
@@ -128,11 +134,13 @@ def kb_product_actions(asin: str):
     kb.adjust(1)
     return kb.as_markup()
 
+
 def kb_back_home():
     kb = InlineKeyboardBuilder()
     kb.button(text="🏠 Home", callback_data="home")
     kb.adjust(1)
     return kb.as_markup()
+
 
 def format_price_card(asin: str, url: str):
     price_now, lowest_90, forecast, lo, hi, min_date, likely_days = mock_prices_from_asin(asin)
@@ -149,12 +157,14 @@ def format_price_card(asin: str, url: str):
     )
     return txt
 
+
 def suggest_thresholds(asin: str):
     price_now, lowest_90, *_ = mock_prices_from_asin(asin)
     s1 = round(price_now * 0.95, 2)    # -5%
     s2 = round(price_now * 0.90, 2)    # -10%
     s3 = round(max(lowest_90, price_now * 0.88), 2)  # vicino al minimo 90gg
     return [s1, s2, s3]
+
 
 def kb_suggest_thresholds(asin: str):
     s1, s2, s3 = suggest_thresholds(asin)
@@ -166,6 +176,7 @@ def kb_suggest_thresholds(asin: str):
     kb.adjust(1)
     return kb.as_markup()
 
+
 def find_name_for_asin(asin: str):
     for items in WATCHES.values():
         for w in items:
@@ -173,18 +184,22 @@ def find_name_for_asin(asin: str):
                 return w["name"]
     return None
 
-def set_or_update_watch(chat_id: int, asin: str, threshold: float, name: Optional[str]):
 
+def set_or_update_watch(chat_id: int, asin: str, threshold: float, name: Optional[str]):
     WATCHES.setdefault(chat_id, [])
     for w in WATCHES[chat_id]:
         if w["asin"] == asin:
             w["threshold"] = threshold
-            if name: w["name"] = name
+            if name:
+                w["name"] = name
             w["last_notified_ts"] = 0
             save_state(WATCHES)
             return
-    WATCHES[chat_id].append({"asin": asin, "threshold": threshold, "last_notified_ts": 0, "name": name or ""})
+    WATCHES[chat_id].append(
+        {"asin": asin, "threshold": threshold, "last_notified_ts": 0, "name": name or ""}
+    )
     save_state(WATCHES)
+
 
 # ================ HANDLERS ================
 @dp.message(CommandStart())
@@ -195,8 +210,9 @@ async def start(m: Message):
         "Puoi impostare una soglia realistica o usare le <b>Soglie consigliate</b>.\n\n"
         "Disclosure: prezzi possono cambiare in qualsiasi momento.",
         reply_markup=kb_home(),
-        parse_mode="HTML"
+        parse_mode="HTML",
     )
+
 
 @dp.callback_query(F.data == "home")
 @dp.callback_query(F.data == "home:help")
@@ -208,9 +224,10 @@ async def cb_home(c: CallbackQuery):
         "📋 <b>Le mie soglie</b>: vedi e gestisci gli alert salvati.\n\n"
         "Suggerimento: usa <b>Soglie consigliate</b> per evitare obiettivi irrealistici.",
         reply_markup=kb_home(),
-        parse_mode="HTML"
+        parse_mode="HTML",
     )
     await c.answer()
+
 
 @dp.callback_query(F.data == "home:list")
 async def cb_list(c: CallbackQuery):
@@ -219,7 +236,6 @@ async def cb_list(c: CallbackQuery):
         await c.message.edit_text("📭 Non hai soglie salvate.", reply_markup=kb_back_home())
         await c.answer()
         return
-    # Mostra in “card” testuale
     lines = []
     for w in items:
         name = w.get("name") or f"Prodotto {w['asin']}"
@@ -228,9 +244,14 @@ async def cb_list(c: CallbackQuery):
             f"  ASIN: <code>{w['asin']}</code>\n"
             f"  Soglia: <b>€{w['threshold']:.2f}</b>\n"
         )
-    txt = "📋 <b>Le mie soglie</b>\n\n" + "\n".join(lines) + "\nSeleziona un prodotto inviando di nuovo il link per gestirlo."
+    txt = (
+        "📋 <b>Le mie soglie</b>\n\n"
+        + "\n".join(lines)
+        + "\nSeleziona un prodotto inviando di nuovo il link per gestirlo."
+    )
     await c.message.edit_text(txt, reply_markup=kb_back_home(), parse_mode="HTML")
     await c.answer()
+
 
 @dp.message()
 async def handle_message(m: Message):
@@ -240,7 +261,6 @@ async def handle_message(m: Message):
     if m.chat.id in PENDING_RENAME:
         asin = PENDING_RENAME[m.chat.id]
         new_name = text
-        # aggiorna solo il nome (mantieni soglia esistente se c'è)
         WATCHES.setdefault(m.chat.id, [])
         found = False
         for w in WATCHES[m.chat.id]:
@@ -249,10 +269,16 @@ async def handle_message(m: Message):
                 found = True
                 break
         if not found:
-            WATCHES[m.chat.id].append({"asin": asin, "threshold": 999999.0, "last_notified_ts": 0, "name": new_name})
+            WATCHES[m.chat.id].append(
+                {"asin": asin, "threshold": 999999.0, "last_notified_ts": 0, "name": new_name}
+            )
         save_state(WATCHES)
         del PENDING_RENAME[m.chat.id]
-        await m.answer(f"✍️ Nome aggiornato per <code>{asin}</code>: <b>{new_name}</b>", parse_mode="HTML", reply_markup=kb_home())
+        await m.answer(
+            f"✍️ Nome aggiornato per <code>{asin}</code>: <b>{new_name}</b>",
+            parse_mode="HTML",
+            reply_markup=kb_home(),
+        )
         return
 
     # Soglia in attesa?
@@ -262,12 +288,17 @@ async def handle_message(m: Message):
         try:
             value = float(candidate)
         except ValueError:
-            await m.answer("⚠️ Inserisci un numero, per esempio 79.90", reply_markup=kb_back_home())
+            await m.answer(
+                "⚠️ Inserisci un numero, per esempio 79.90", reply_markup=kb_back_home()
+            )
             return
-        # usa eventuale nome già noto
         name = find_name_for_asin(asin)
         set_or_update_watch(m.chat.id, asin, value, name)
-        await m.answer(f"✅ Ok! Ti avviso quando <code>{asin}</code> scende sotto <b>€{value:.2f}</b>.", parse_mode="HTML", reply_markup=kb_home())
+        await m.answer(
+            f"✅ Ok! Ti avviso quando <code>{asin}</code> scende sotto <b>€{value:.2f}</b>.",
+            parse_mode="HTML",
+            reply_markup=kb_home(),
+        )
         del PENDING_THRESHOLD[m.chat.id]
         return
 
@@ -275,42 +306,50 @@ async def handle_message(m: Message):
     match = re.search(r"(?:dp|gp/product)/([A-Z0-9]{10})", text, flags=re.IGNORECASE)
     if "amazon." in text.lower() and match:
         asin = match.group(1).upper()
-        # Nome automatico se non presente
         name_existing = find_name_for_asin(asin)
         name_auto = name_existing or auto_short_name_from_url(text, asin)
 
         card = format_price_card(asin, text)
         await m.answer(card, parse_mode="HTML", reply_markup=kb_product_actions(asin))
-
-        # Se non esiste ancora, proponi nome auto (non forziamo salvataggio finché non mette soglia/rename)
-        if not name_existing:
-            WATCHES.setdefault(m.chat.id, [])
-            # non inseriamo subito una watch senza soglia; solo ricordiamo un nome suggerito quando la creerà
-            # lo salveremo quando l'utente imposta soglia o rinomina
+        # name_auto per ora lo usiamo solo a livello di card; la soglia salva poi
         return
 
-    # Non Amazon
-    await m.answer("Incolla un link Amazon del prodotto che vuoi monitorare 🙂", reply_markup=kb_home())
+    await m.answer(
+        "Incolla un link Amazon del prodotto che vuoi monitorare 🙂",
+        reply_markup=kb_home(),
+    )
+
 
 @dp.callback_query(F.data.startswith("watch:"))
 async def cb_watch(c: CallbackQuery):
     asin = c.data.split(":", 1)[1]
     PENDING_THRESHOLD[c.message.chat.id] = asin
-    await c.message.answer(f"✍️ Inserisci la <b>soglia in euro</b> per <code>{asin}</code> (es. 79.90):", parse_mode="HTML")
+    await c.message.answer(
+        f"✍️ Inserisci la <b>soglia in euro</b> per <code>{asin}</code> (es. 79.90):",
+        parse_mode="HTML",
+    )
     await c.answer()
+
 
 @dp.callback_query(F.data.startswith("rename:"))
 async def cb_rename(c: CallbackQuery):
     asin = c.data.split(":", 1)[1]
     PENDING_RENAME[c.message.chat.id] = asin
-    await c.message.answer(f"✍️ Invia il <b>nuovo nome</b> per <code>{asin}</code> (es. 'Rasoio Andis ProFoil'):", parse_mode="HTML")
+    await c.message.answer(
+        f"✍️ Invia il <b>nuovo nome</b> per <code>{asin}</code> (es. 'Rasoio Andis ProFoil'):",
+        parse_mode="HTML",
+    )
     await c.answer()
+
 
 @dp.callback_query(F.data.startswith("suggest:"))
 async def cb_suggest(c: CallbackQuery):
     asin = c.data.split(":", 1)[1]
-    await c.message.answer("🎯 Soglie consigliate (scegline una):", reply_markup=kb_suggest_thresholds(asin))
+    await c.message.answer(
+        "🎯 Soglie consigliate (scegline una):", reply_markup=kb_suggest_thresholds(asin)
+    )
     await c.answer()
+
 
 @dp.callback_query(F.data.startswith("setthr:"))
 async def cb_setthr(c: CallbackQuery):
@@ -318,16 +357,23 @@ async def cb_setthr(c: CallbackQuery):
     thr = float(val)
     name = find_name_for_asin(asin)
     set_or_update_watch(c.message.chat.id, asin, thr, name)
-    await c.message.answer(f"✅ Soglia impostata per <code>{asin}</code>: <b>€{thr:.2f}</b>", parse_mode="HTML", reply_markup=kb_home())
+    await c.message.answer(
+        f"✅ Soglia impostata per <code>{asin}</code>: <b>€{thr:.2f}</b>",
+        parse_mode="HTML",
+        reply_markup=kb_home(),
+    )
     await c.answer()
+
 
 @dp.callback_query(F.data.startswith("backprod:"))
 async def cb_backprod(c: CallbackQuery):
     asin = c.data.split(":", 1)[1]
-    # non abbiamo l'URL qui; ricomponiamo una card senza URL (ok)
     card = format_price_card(asin, f"https://www.amazon.it/dp/{asin}")
-    await c.message.edit_text(card, parse_mode="HTML", reply_markup=kb_product_actions(asin))
+    await c.message.edit_text(
+        card, parse_mode="HTML", reply_markup=kb_product_actions(asin)
+    )
     await c.answer()
+
 
 # ================ PRICE WATCHER (mock) ================
 async def price_watcher():
@@ -349,7 +395,7 @@ async def price_watcher():
                             chat_id,
                             f"🎉 <b>Sotto soglia!</b>\n"
                             f"{name}\nASIN <code>{asin}</code> ora è <b>€{price_now:.2f}</b>\n➡️ {url}",
-                            parse_mode="HTML"
+                            parse_mode="HTML",
                         )
                         w["last_notified_ts"] = now
                         save_state(WATCHES)
@@ -357,10 +403,9 @@ async def price_watcher():
             pass
         await asyncio.sleep(60)
 
-# ================ MAIN (WEBHOOK) ================
 
+# ================ AIOHTTP APP (WEBHOOK + /health) ================
 async def on_startup(app: web.Application):
-    # Configura il webhook su Telegram
     if WEBHOOK_URL:
         full_url = WEBHOOK_URL + WEBHOOK_PATH
         print(f"Imposto webhook: {full_url}")
@@ -368,51 +413,34 @@ async def on_startup(app: web.Application):
     else:
         print("ATTENZIONE: WEBHOOK_URL non impostata, il bot non riceverà aggiornamenti.")
 
-    # Avvia il watcher prezzi in background
     asyncio.create_task(price_watcher())
     print("Bot in esecuzione (webhook)...")
+
 
 async def on_shutdown(app: web.Application):
     print("Rimuovo webhook...")
     await bot.delete_webhook()
 
+
+async def health(request: web.Request):
+    return web.Response(text="OK")
+
+
 def run_telegram_bot():
     app = web.Application()
 
-    # Collega aiogram al server aiohttp
     SimpleRequestHandler(dp, bot).register(app, path=WEBHOOK_PATH)
     setup_application(app, dp, bot=bot)
 
-    # Hook di startup/shutdown
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
 
-    # Avvia server web
+    # endpoint /health per Render + UptimeRobot
+    app.router.add_get("/health", health)
+
     web.run_app(app, host="0.0.0.0", port=PORT)
 
-# ==========================
-# FLASK APP /health
-# ==========================
 
-app = Flask(__name__)
-
-@app.route("/health")
-def health():
-    return "OK", 200
-
-# ==========================
-# MAIN
-# ==========================
-
+# ================ MAIN ================
 if __name__ == "__main__":
-    # Porta fornita da Render (default di backup 10000)
-    PORT = int(os.environ.get("PORT", 10000))
-
-    # 1) Avvia il bot Telegram in un thread separato
-    bot_thread = threading.Thread(target=run_telegram_bot, daemon=True)
-    bot_thread.start()
-
-    # 2) Avvia il server Flask che espone /health
-    app.run(host="0.0.0.0", port=PORT)
-
-
+    run_telegram_bot()
