@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery
@@ -68,7 +69,7 @@ def auto_short_name_from_url(url: str, asin: str) -> str:
             if len(kw) > 40:
                 kw = kw[:40].rstrip() + "…"
             return kw.title()
-    except:
+    except Exception:
         pass
     return f"Prodotto {asin}"
 
@@ -99,7 +100,7 @@ def save_state(state):
 PENDING_THRESHOLD = {}   # chat_id -> asin
 PENDING_RENAME = {}      # chat_id -> asin
 WATCHES = load_state()   # chat_id -> list[{asin, threshold, last_notified_ts, name}]
-# struttura elemento: {"asin": "...", "threshold": 99.99, "last_notified_ts": 0, "name": "..."}
+# struttura elemento: {"asin": "...", "threshold": float|None, "last_notified_ts": 0, "name": "..."}
 
 # ================ BOT SETUP ================
 load_dotenv()
@@ -118,7 +119,7 @@ PORT = int(os.getenv("PORT", "8080"))           # porta che passa Render
 def kb_home():
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ Aggiungi prodotto", callback_data="home:add")
-    kb.button(text="📋 Le mie soglie", callback_data="home:list")
+    kb.button(text="📋 I miei prodotti", callback_data="home:list")
     kb.button(text="ℹ️ Aiuto", callback_data="home:help")
     kb.adjust(1)
     return kb.as_markup()
@@ -130,6 +131,7 @@ def kb_product_actions(asin: str):
     kb.button(text="🎯 Soglie consigliate", callback_data=f"suggest:{asin}")
     kb.button(text="✍️ Rinomina", callback_data=f"rename:{asin}")
     kb.button(text="🛒 Apri su Amazon", url=affiliate_link_it(asin))
+    kb.button(text="📋 Torna ai prodotti", callback_data="home:list")
     kb.button(text="🏠 Home", callback_data="home")
     kb.adjust(1)
     return kb.as_markup()
@@ -185,20 +187,56 @@ def find_name_for_asin(asin: str):
     return None
 
 
-def set_or_update_watch(chat_id: int, asin: str, threshold: float, name: Optional[str]):
+def ensure_watch(chat_id: int, asin: str, name: Optional[str] = None):
+    """
+    Garantisce che esista una voce per (chat_id, asin).
+    Se non esiste, la crea con threshold=None.
+    Se esiste e non ha nome, può impostare il nome auto.
+    """
     WATCHES.setdefault(chat_id, [])
     for w in WATCHES[chat_id]:
         if w["asin"] == asin:
-            w["threshold"] = threshold
-            if name:
+            if name and not w.get("name"):
                 w["name"] = name
-            w["last_notified_ts"] = 0
-            save_state(WATCHES)
-            return
-    WATCHES[chat_id].append(
-        {"asin": asin, "threshold": threshold, "last_notified_ts": 0, "name": name or ""}
-    )
+                save_state(WATCHES)
+            return w
+    w = {"asin": asin, "threshold": None, "last_notified_ts": 0, "name": name or ""}
+    WATCHES[chat_id].append(w)
     save_state(WATCHES)
+    return w
+
+
+def set_or_update_watch(chat_id: int, asin: str, threshold: float, name: Optional[str]):
+    """
+    Imposta/aggiorna la soglia per un prodotto, creando la voce se non esiste.
+    """
+    w = ensure_watch(chat_id, asin, name)
+    w["threshold"] = threshold
+    w["last_notified_ts"] = 0
+    save_state(WATCHES)
+
+
+# ================ LINK EXPANDER PER LINK CORTI AMAZON ================
+async def expand_amazon_url(text: str) -> str:
+    """
+    Se il testo contiene un link corto amzn.* o un link Amazon,
+    prova a seguirne i redirect e restituisce l'URL finale.
+    Se qualcosa va storto, restituisce il testo originale.
+    """
+    m = re.search(r"(https?://\S+)", text)
+    if not m:
+        return text
+    url = m.group(1)
+
+    if not re.search(r"(amzn\.|amazon\.)", url, flags=re.IGNORECASE):
+        return text
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, allow_redirects=True, timeout=10) as resp:
+                return str(resp.url)
+    except Exception:
+        return text
 
 
 # ================ HANDLERS ================
@@ -206,7 +244,7 @@ def set_or_update_watch(chat_id: int, asin: str, threshold: float, name: Optiona
 async def start(m: Message):
     await m.answer(
         "👋 Benvenuto! Questo bot ti aiuta a comprare al prezzo giusto su Amazon.\n\n"
-        "Incolla un link prodotto per vedere prezzo attuale, minimo 90g (con data) e una previsione a 7 giorni.\n"
+        "Incolla un link prodotto (anche dall'app Amazon) per vedere prezzo attuale, minimo 90g (con data) e una previsione a 7 giorni.\n"
         "Puoi impostare una soglia realistica o usare le <b>Soglie consigliate</b>.\n\n"
         "Disclosure: prezzi possono cambiare in qualsiasi momento.",
         reply_markup=kb_home(),
@@ -221,7 +259,7 @@ async def cb_home(c: CallbackQuery):
     await c.message.edit_text(
         "🏠 <b>Home</b>\n\n"
         "➕ <b>Aggiungi prodotto</b>: incolla qui il link Amazon del prodotto.\n"
-        "📋 <b>Le mie soglie</b>: vedi e gestisci gli alert salvati.\n\n"
+        "📋 <b>I miei prodotti</b>: vedi e gestisci gli alert salvati.\n\n"
         "Suggerimento: usa <b>Soglie consigliate</b> per evitare obiettivi irrealistici.",
         reply_markup=kb_home(),
         parse_mode="HTML",
@@ -233,23 +271,52 @@ async def cb_home(c: CallbackQuery):
 async def cb_list(c: CallbackQuery):
     items = WATCHES.get(c.message.chat.id, [])
     if not items:
-        await c.message.edit_text("📭 Non hai soglie salvate.", reply_markup=kb_back_home())
+        await c.message.edit_text("📭 Non hai prodotti salvati.", reply_markup=kb_back_home())
         await c.answer()
         return
+
+    # Testo riepilogo
     lines = []
     for w in items:
         name = w.get("name") or f"Prodotto {w['asin']}"
+        thr = w.get("threshold")
+        if isinstance(thr, (int, float)):
+            thr_txt = f"€{thr:.2f}"
+        else:
+            thr_txt = "non impostata"
         lines.append(
             f"• <b>{name}</b>\n"
             f"  ASIN: <code>{w['asin']}</code>\n"
-            f"  Soglia: <b>€{w['threshold']:.2f}</b>\n"
+            f"  Soglia: <b>{thr_txt}</b>\n"
         )
     txt = (
-        "📋 <b>Le mie soglie</b>\n\n"
+        "📋 <b>I miei prodotti</b>\n\n"
         + "\n".join(lines)
-        + "\nSeleziona un prodotto inviando di nuovo il link per gestirlo."
+        + "\nTocca un prodotto qui sotto per gestirlo."
     )
-    await c.message.edit_text(txt, reply_markup=kb_back_home(), parse_mode="HTML")
+
+    # Tastiera con un bottone per prodotto
+    kb = InlineKeyboardBuilder()
+    for w in items:
+        label = w.get("name") or f"Prodotto {w['asin']}"
+        # per evitare callback troppo lunghi, usiamo solo ASIN
+        kb.button(text=label, callback_data=f"manage:{w['asin']}")
+    kb.button(text="🏠 Home", callback_data="home")
+    kb.adjust(1)
+
+    await c.message.edit_text(txt, reply_markup=kb.as_markup(), parse_mode="HTML")
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("manage:"))
+async def cb_manage(c: CallbackQuery):
+    asin = c.data.split(":", 1)[1]
+    # Assicuriamoci che esista la voce
+    ensure_watch(c.message.chat.id, asin)
+    card = format_price_card(asin, f"https://www.amazon.it/dp/{asin}")
+    await c.message.edit_text(
+        card, parse_mode="HTML", reply_markup=kb_product_actions(asin)
+    )
     await c.answer()
 
 
@@ -270,7 +337,7 @@ async def handle_message(m: Message):
                 break
         if not found:
             WATCHES[m.chat.id].append(
-                {"asin": asin, "threshold": 999999.0, "last_notified_ts": 0, "name": new_name}
+                {"asin": asin, "threshold": None, "last_notified_ts": 0, "name": new_name}
             )
         save_state(WATCHES)
         del PENDING_RENAME[m.chat.id]
@@ -302,18 +369,26 @@ async def handle_message(m: Message):
         del PENDING_THRESHOLD[m.chat.id]
         return
 
-    # Parsing link Amazon
-    match = re.search(r"(?:dp|gp/product)/([A-Z0-9]{10})", text, flags=re.IGNORECASE)
-    if "amazon." in text.lower() and match:
+    # Espandi eventuale link corto (amzn.eu, amzn.to, ecc.)
+    url_for_parsing = text
+    if "http" in text:
+        url_for_parsing = await expand_amazon_url(text)
+
+    # Parsing link Amazon (dopo eventuale espansione)
+    match = re.search(r"(?:dp|gp/product)/([A-Z0-9]{10})", url_for_parsing, flags=re.IGNORECASE)
+    if re.search(r"amazon\.", url_for_parsing, flags=re.IGNORECASE) and match:
         asin = match.group(1).upper()
         name_existing = find_name_for_asin(asin)
-        name_auto = name_existing or auto_short_name_from_url(text, asin)
+        name_auto = name_existing or auto_short_name_from_url(url_for_parsing, asin)
 
-        card = format_price_card(asin, text)
+        # Crea/aggiorna il prodotto con nome auto anche se l'utente non rinomina
+        ensure_watch(m.chat.id, asin, name_auto)
+
+        card = format_price_card(asin, url_for_parsing)
         await m.answer(card, parse_mode="HTML", reply_markup=kb_product_actions(asin))
-        # name_auto per ora lo usiamo solo a livello di card; la soglia salva poi
         return
 
+    # Non Amazon
     await m.answer(
         "Incolla un link Amazon del prodotto che vuoi monitorare 🙂",
         reply_markup=kb_home(),
@@ -383,7 +458,10 @@ async def price_watcher():
             for chat_id, items in list(WATCHES.items()):
                 for w in items:
                     asin = w["asin"]
-                    threshold = w["threshold"]
+                    threshold = w.get("threshold")
+                    # se non c'è soglia, non notificare
+                    if not isinstance(threshold, (int, float)):
+                        continue
                     last_ts = w.get("last_notified_ts", 0)
                     if now - last_ts < 12 * 3600:
                         continue
