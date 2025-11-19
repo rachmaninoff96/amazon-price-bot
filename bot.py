@@ -5,6 +5,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
 
 from handlers import router
@@ -29,7 +30,10 @@ WEBHOOK_BASE_URL = os.getenv("WEBHOOK_URL", "https://amazon-price-bot-9fjb.onren
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
 PORT = int(os.getenv("PORT", "8080"))
 
-bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(
+    token=TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+)
 dp = Dispatcher()
 dp.include_router(router)
 
