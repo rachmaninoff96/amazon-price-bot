@@ -1,5 +1,7 @@
 
 import os
+import threading
+from flask import Flask
 import re
 import asyncio
 import time
@@ -374,7 +376,7 @@ async def on_shutdown(app: web.Application):
     print("Rimuovo webhook...")
     await bot.delete_webhook()
 
-def main():
+def run_telegram_bot():
     app = web.Application()
 
     # Collega aiogram al server aiohttp
@@ -388,6 +390,29 @@ def main():
     # Avvia server web
     web.run_app(app, host="0.0.0.0", port=PORT)
 
+# ==========================
+# FLASK APP /health
+# ==========================
+
+app = Flask(__name__)
+
+@app.route("/health")
+def health():
+    return "OK", 200
+
+# ==========================
+# MAIN
+# ==========================
+
 if __name__ == "__main__":
-    main()
+    # Porta fornita da Render (default di backup 10000)
+    PORT = int(os.environ.get("PORT", 10000))
+
+    # 1) Avvia il bot Telegram in un thread separato
+    bot_thread = threading.Thread(target=run_telegram_bot, daemon=True)
+    bot_thread.start()
+
+    # 2) Avvia il server Flask che espone /health
+    app.run(host="0.0.0.0", port=PORT)
+
 
