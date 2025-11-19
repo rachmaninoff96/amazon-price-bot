@@ -59,14 +59,18 @@ async def watcher_tick_handler(request: web.Request):
 async def on_startup(app: web.Application):
     full_url = WEBHOOK_BASE_URL + WEBHOOK_PATH
     logger.info("Imposto webhook: %s", full_url)
-    await bot.set_webhook(full_url)
-    logger.info("Webhook impostato correttamente.")
+    try:
+        await bot.set_webhook(full_url)
+        logger.info("Webhook impostato correttamente.")
+    except Exception as e:
+        logger.exception("Errore impostando il webhook: %s", e)
+        # Non facciamo crashare l'app: almeno /health continua a rispondere
 
 
 async def on_shutdown(app: web.Application):
-    logger.info("Rimuovo webhook…")
-    await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("Webhook rimosso.")
+    # Non tocchiamo il webhook in shutdown:
+    # così Telegram continua a sapere dove mandare gli update
+    logger.info("Shutdown app (lascio il webhook così com'è).")
 
 
 def create_app() -> web.Application:
