@@ -27,6 +27,7 @@ def watcher_notification_keyboard(asin: str):
     kb.button(text="🔄 Continua a monitorare", callback_data=_cb_continua(asin))
     kb.button(text="⚙️ Imposta nuova soglia", callback_data=_cb_new_threshold(asin))
     kb.button(text="🗑️ Rimuovi", callback_data=_cb_delete(asin))
+    kb.button(text="🏠 Home", callback_data="home")
     kb.adjust(1)
     return kb.as_markup()
 
