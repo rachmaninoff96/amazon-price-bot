@@ -1,6 +1,8 @@
-import logging
 import time
+import logging
+
 from aiogram import Bot
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from models import WATCHES, save_state, find_name_for_asin
 from util import mock_prices_from_asin, affiliate_link_it
@@ -8,85 +10,97 @@ from util import mock_prices_from_asin, affiliate_link_it
 logger = logging.getLogger(__name__)
 
 
+def _cb_continua(asin: str):
+    return f"continue:{asin}"
+
+
+def _cb_new_threshold(asin: str):
+    return f"newthr:{asin}"
+
+
+def _cb_delete(asin: str):
+    return f"delete:{asin}"
+
+
+def watcher_notification_keyboard(asin: str):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔄 Continua a monitorare", callback_data=_cb_continua(asin))
+    kb.button(text="⚙️ Imposta nuova soglia", callback_data=_cb_new_threshold(asin))
+    kb.button(text="🗑️ Rimuovi", callback_data=_cb_delete(asin))
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 async def run_price_check_iteration(bot: Bot):
     """
-    Esegue una singola iterazione del watcher.
-    Da invocare tramite endpoint /watcher-tick (cron esterno).
-    Implementa il sistema intelligente:
-        - notifica ingresso sotto soglia
-        - notifica se il prezzo scende ancora di più
-        - reset quando il prezzo risale sopra la soglia
+    UNA singola iterazione del watcher.
+    Chiamata tramite GET /watcher-tick (cron esterno).
     """
     now = time.time()
-
-    if not WATCHES:
-        logger.info("Nessun prodotto da controllare (WATCHES vuoto).")
-        return
 
     for chat_id, items in list(WATCHES.items()):
         for w in items:
             asin = w["asin"]
             threshold = w.get("threshold")
-
             if not isinstance(threshold, (int, float)):
                 continue
 
-            # ============================ PREZZO CORRENTE ============================
-            price_now, *_ = mock_prices_from_asin(asin)
+            price_now, lowest_90, *_ = mock_prices_from_asin(asin)
+            last_price = w.get("last_notified_price")
+            last_ts = w.get("last_notified_ts", 0)
 
-            last_notified_price = w.get("last_notified_price")
-            # può essere None o float
+            # Anti-spam: almeno 12 ore tra le notifiche
+            if now - last_ts < 12 * 3600:
+                continue
 
-            # ============================ RESET SE RISALITO ============================
-            if price_now > threshold:
-                # prezzo tornato sopra soglia → reset
-                if last_notified_price is not None:
-                    w["last_notified_price"] = None
-                    w["last_notified_ts"] = 0
+            name = w.get("name") or find_name_for_asin(asin) or f"Prodotto"
+
+            # Calcolo differenza soglia
+            delta = price_now - threshold
+            ratio = delta / price_now if price_now != 0 else 1
+
+            # --- Caso 1: SOTTO SOGLIA ---
+            if price_now <= threshold:
+                # notifica solo se il prezzo è cambiato oppure mai notificato
+                if last_price is None or last_price != price_now:
+                    text = (
+                        "🎉 <b>Prezzo sotto soglia!</b>\n"
+                        f"<b>{name}</b>\n"
+                        f"Prezzo attuale: <b>€{price_now:.2f}</b>\n"
+                        f"Soglia: €{threshold:.2f}\n\n"
+                        f"Link: {affiliate_link_it(asin)}"
+                    )
+                    await bot.send_message(
+                        chat_id,
+                        text,
+                        reply_markup=watcher_notification_keyboard(asin),
+                        parse_mode="HTML",
+                    )
+                    w["last_notified_price"] = price_now
+                    w["last_notified_ts"] = now
                     save_state()
                 continue
 
-            # ============================ PREZZO SOTTO SOGLIA ============================
-            if last_notified_price is None:
-                # prima volta sotto soglia
-                await send_threshold_notice(bot, chat_id, w, price_now)
-                w["last_notified_price"] = price_now
-                w["last_notified_ts"] = now
-                save_state()
+            # --- Caso 2: QUASI SOTTO SOGLIA (entro 1%) ---
+            if 0 < delta <= price_now * 0.01:
+                if last_price is None or last_price != price_now:
+                    text = (
+                        "⚠️ <b>Prezzo quasi sotto soglia!</b>\n"
+                        f"<b>{name}</b>\n"
+                        f"Prezzo: <b>€{price_now:.2f}</b>\n"
+                        f"Soglia: €{threshold:.2f}\n"
+                        f"Differenza: €{delta:.2f}\n\n"
+                        f"Link: {affiliate_link_it(asin)}"
+                    )
+                    await bot.send_message(
+                        chat_id,
+                        text,
+                        reply_markup=watcher_notification_keyboard(asin),
+                        parse_mode="HTML",
+                    )
+                    w["last_notified_price"] = price_now
+                    w["last_notified_ts"] = now
+                    save_state()
                 continue
 
-            # ============================ NUOVO MINIMO ============================
-            if price_now < last_notified_price:
-                # prezzo sceso ulteriormente → nuova notifica
-                await send_threshold_notice(bot, chat_id, w, price_now)
-                w["last_notified_price"] = price_now
-                w["last_notified_ts"] = now
-                save_state()
-                continue
-
-            # ============================ PREZZO STABILE / RIALZATO MA NON SOPRA ============================
-            # nessuna notifica
-            continue
-
-    logger.info("Iterazione watcher completata.")
-
-
-# ============================ FUNZIONE INVIO NOTIFICA ============================
-
-async def send_threshold_notice(bot: Bot, chat_id: int, w: dict, price_now: float):
-    asin = w["asin"]
-    name = w.get("name") or find_name_for_asin(asin) or "Prodotto"
-    url = affiliate_link_it(asin)
-
-    text = (
-        f"🎉 <b>Prezzo sotto soglia!</b>\n"
-        f"<b>{name}</b>\n"
-        f"💶 Ora a <b>€{price_now:.2f}</b>\n"
-        f"➡️ {url}"
-    )
-
-    try:
-        await bot.send_message(chat_id, text)
-        logger.info(f"Notifica inviata per {asin} ({name}) a {chat_id}")
-    except Exception as e:
-        logger.warning(f"Errore inviando notifica a {chat_id}: {e}")
+    logger.info("Watcher iteration done.")
