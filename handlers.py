@@ -53,11 +53,14 @@ def kb_back_home():
 
 def kb_product_actions(asin: str):
     kb = InlineKeyboardBuilder()
+
+    # ✅ FEATURE 2: bottone dedicato acquisto (URL affiliato)
+    kb.button(text="🛒 Acquista su Amazon", url=affiliate_link_it(asin))
+
     kb.button(text="➕ Imposta soglia", callback_data=f"watch:{asin}")
     kb.button(text="🎯 Soglie consigliate", callback_data=f"suggest:{asin}")
     kb.button(text="✍️ Rinomina", callback_data=f"rename:{asin}")
     kb.button(text="🗑️ Elimina", callback_data=f"delete:{asin}")
-    kb.button(text="🛒 Apri su Amazon", url=affiliate_link_it(asin))
     kb.button(text="🏠 Home", callback_data="home")
     kb.adjust(1)
     return kb.as_markup()
@@ -69,7 +72,10 @@ def kb_suggest_thresholds(asin: str):
     kb.button(text=f"−5% → €{s1}", callback_data=f"setthr:{asin}:{s1}")
     kb.button(text=f"−10% → €{s2}", callback_data=f"setthr:{asin}:{s2}")
     kb.button(text=f"Vicino min → €{s3}", callback_data=f"setthr:{asin}:{s3}")
+
+    # ✅ BUG FIX 1: tasto indietro con callback backprod:{asin}
     kb.button(text="⬅️ Indietro", callback_data=f"backprod:{asin}")
+
     kb.button(text="🏠 Home", callback_data="home")
     kb.adjust(1)
     return kb.as_markup()
@@ -141,6 +147,29 @@ async def cb_add(c: CallbackQuery):
     await c.answer()
 
 
+def _render_products_list(items: list[dict], title: str = "📋 <b>I miei prodotti</b>"):
+    """Render identico alla lista standard, ma su una lista già filtrata."""
+    lines = []
+    for w in items:
+        asin = w["asin"]
+        name = w.get("name") or "Prodotto"
+        thr = w.get("threshold")
+        price_now, *_ = mock_prices_from_asin(asin)
+        thr_txt = f"€{thr:.2f}" if isinstance(thr, (int, float)) else "—"
+        lines.append(
+            f"• <b>{name}</b>\n"
+            f"  Prezzo attuale: <b>€{price_now:.2f}</b>\n"
+            f"  Soglia: {thr_txt}\n"
+        )
+    txt = f"{title}\n\n" + ("\n".join(lines) if lines else "—")
+    kb = InlineKeyboardBuilder()
+    for w in items:
+        kb.button(text=w.get("name") or "Prodotto", callback_data=f"manage:{w['asin']}")
+    kb.button(text="🏠 Home", callback_data="home")
+    kb.adjust(1)
+    return txt, kb.as_markup()
+
+
 @router.callback_query(F.data == "list")
 async def cb_list(c: CallbackQuery):
     chat_id = c.message.chat.id
@@ -154,28 +183,8 @@ async def cb_list(c: CallbackQuery):
         await c.answer()
         return
 
-    lines = []
-    for w in items:
-        asin = w["asin"]
-        name = w.get("name") or "Prodotto"
-        thr = w.get("threshold")
-        price_now, *_ = mock_prices_from_asin(asin)
-        thr_txt = f"€{thr:.2f}" if isinstance(thr, (int, float)) else "—"
-        lines.append(
-            f"• <b>{name}</b>\n"
-            f"  Prezzo attuale: <b>€{price_now:.2f}</b>\n"
-            f"  Soglia: {thr_txt}\n"
-        )
-
-    txt = "📋 <b>I miei prodotti</b>\n\n" + "\n".join(lines)
-
-    kb = InlineKeyboardBuilder()
-    for w in items:
-        kb.button(text=w.get("name") or "Prodotto", callback_data=f"manage:{w['asin']}")
-    kb.button(text="🏠 Home", callback_data="home")
-    kb.adjust(1)
-
-    await c.message.edit_text(txt, reply_markup=kb.as_markup(), parse_mode="HTML")
+    txt, kb = _render_products_list(items)
+    await c.message.edit_text(txt, reply_markup=kb, parse_mode="HTML")
     await c.answer()
 
 
@@ -183,7 +192,8 @@ async def cb_list(c: CallbackQuery):
 async def cb_manage(c: CallbackQuery):
     asin = c.data.split(":", 1)[1]
     ensure_watch(c.message.chat.id, asin)
-    card = format_price_card(asin, f"https://www.amazon.it/dp/{asin}")
+    url = affiliate_link_it(asin)
+    card = format_price_card(asin, url)
     await c.message.edit_text(
         card,
         reply_markup=kb_product_actions(asin),
@@ -277,14 +287,33 @@ async def cb_newthr(c: CallbackQuery):
     await c.answer()
 
 
-# ========== MESSAGGI GENERICI (link Amazon) ==========
+# =========================================================
+#  ✅ BUG FIX 1: handler backprod:{asin}
+# =========================================================
+@router.callback_query(F.data.startswith("backprod:"))
+async def cb_backprod(c: CallbackQuery):
+    asin = c.data.split(":", 1)[1]
+    ensure_watch(c.message.chat.id, asin)
+
+    url = affiliate_link_it(asin)
+    card = format_price_card(asin, url)
+
+    await c.message.edit_text(
+        card,
+        reply_markup=kb_product_actions(asin),
+        parse_mode="HTML",
+    )
+    await c.answer()
+
+
+# ========== MESSAGGI GENERICI (link Amazon / soglia / rename / ricerca) ==========
 
 @router.message()
 async def handle_message(m: Message):
     text = (m.text or "").strip()
     chat_id = m.chat.id
 
-    # Rinomina
+    # ------------------ RINOMINA ------------------
     if chat_id in PENDING_RENAME:
         asin = PENDING_RENAME.pop(chat_id)
         name = text
@@ -298,7 +327,7 @@ async def handle_message(m: Message):
         )
         return
 
-    # Soglia
+    # ------------------ SOGLIA ------------------
     if chat_id in PENDING_THRESHOLD:
         asin = PENDING_THRESHOLD.pop(chat_id)
         candidate = text.replace(",", ".")
@@ -319,7 +348,7 @@ async def handle_message(m: Message):
         )
         return
 
-    # Link Amazon
+    # ------------------ LINK AMAZON ------------------
     if "http" in text:
         url = await expand_amazon_url(text)
         m_asin = re.search(r"(?:dp|gp/product)/([A-Z0-9]{10})", url, flags=re.I)
@@ -335,7 +364,31 @@ async def handle_message(m: Message):
             )
             return
 
-    # fallback
+        # se è un http non Amazon → fallback classico
+        await m.answer("Incolla un link Amazon 🙂", reply_markup=kb_home())
+        return
+
+    # =========================================================
+    # ✅ FEATURE 3: ricerca testuale tra prodotti salvati
+    # =========================================================
+    query = text.lower().strip()
+    if query:
+        all_items = get_watches_for_chat(chat_id)
+        matches = []
+        for w in all_items:
+            name = (w.get("name") or "").lower()
+            if query in name:
+                matches.append(w)
+
+        if matches:
+            txt, kb = _render_products_list(matches, title="🔍 <b>Risultati trovati</b>")
+            await m.answer(txt, reply_markup=kb, parse_mode="HTML")
+            return
+
+        await m.answer("Nessun prodotto trovato con questo nome.", reply_markup=kb_home())
+        return
+
+    # ------------------ FALLBACK FINALE ------------------
     await m.answer(
         "Incolla un link Amazon 🙂",
         reply_markup=kb_home(),
