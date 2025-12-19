@@ -18,15 +18,18 @@ logger = logging.getLogger(__name__)
 USE_KEEPA: bool = os.getenv("USE_KEEPA", "0") == "1"
 KEEPA_API_KEY: str = os.getenv("KEEPA_API_KEY", "").strip()
 
+# Amazon locale per Keepa: amazon.it -> domainId (default 8)
+KEEPA_DOMAIN_ID: int = int(os.getenv("KEEPA_DOMAIN_ID", "8"))
+
 # Cache per evitare chiamate duplicate: asin -> (ts, PriceData)
 _PRICE_CACHE: Dict[str, Tuple[float, "PriceData"]] = {}
 PRICE_CACHE_TTL_SECONDS = 300  # 5 minuti
 
-# Log di boot (non stampa mai la key)
 logger.warning(
-    "PRICING INIT | USE_KEEPA=%s | KEEPA_API_KEY present=%s | CACHE_TTL=%ss",
+    "PRICING INIT | USE_KEEPA=%s | KEEPA_API_KEY present=%s | domainId=%s | CACHE_TTL=%ss",
     USE_KEEPA,
     bool(KEEPA_API_KEY),
+    KEEPA_DOMAIN_ID,
     PRICE_CACHE_TTL_SECONDS,
 )
 
@@ -50,9 +53,6 @@ class PriceData:
 # ============================================================
 
 def mock_prices_from_asin(asin: str) -> PriceData:
-    """
-    Generatore di prezzi fittizi stabile, utile come fallback.
-    """
     base = sum(ord(c) for c in asin)
 
     price_now = 19.9 + (base % 280) + ((base % 9) * 0.1)
@@ -103,12 +103,9 @@ async def _fetch_keepa_stats_90(asin: str) -> Tuple[float, float]:
         raise RuntimeError("KEEPA_API_KEY missing")
 
     url = "https://api.keepa.com/product"
-
-    # NB: domain='IT' per prova. Se nei log vediamo errore su domain,
-    # lo correggiamo subito (fix minimo).
     params = {
         "key": KEEPA_API_KEY,
-        "domain": "IT",
+        "domain": KEEPA_DOMAIN_ID,   # <<< FIX: domainId numerico
         "asin": asin,
         "stats": 90,
         "history": 0,
@@ -123,12 +120,12 @@ async def _fetch_keepa_stats_90(asin: str) -> Tuple[float, float]:
                 raw_text = await resp.text()
 
                 if status != 200:
-                    raise RuntimeError(f"HTTP {status}: {raw_text[:200]}")
+                    raise RuntimeError(f"HTTP {status}: {raw_text[:300]}")
 
                 try:
                     data = await resp.json()
                 except Exception:
-                    raise RuntimeError(f"JSON parse failed: {raw_text[:200]}")
+                    raise RuntimeError(f"JSON parse failed: {raw_text[:300]}")
         except asyncio.TimeoutError:
             raise RuntimeError("Timeout while calling Keepa")
         except Exception as e:
@@ -203,17 +200,11 @@ async def get_price_data(asin: str) -> PriceData:
                 likely_days=3,            # placeholder
             )
             _PRICE_CACHE[asin] = (now, pdata)
-            logger.warning(
-                "KEEPA OK | asin=%s | now=%.2f | low90=%.2f",
-                asin,
-                pdata.price_now,
-                pdata.lowest_90,
-            )
+            logger.warning("KEEPA OK | asin=%s | now=%.2f | low90=%.2f", asin, pdata.price_now, pdata.lowest_90)
             return pdata
         except Exception as e:
             logger.warning("KEEPA FAILED -> fallback mock | asin=%s | reason=%s", asin, str(e))
 
-    # fallback mock
     pdata = mock_prices_from_asin(asin)
     _PRICE_CACHE[asin] = (now, pdata)
     return pdata
