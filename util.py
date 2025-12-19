@@ -1,25 +1,33 @@
 import os
 import re
 import time
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Dict, Tuple, Optional
 
 import aiohttp
 
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # CONFIG
 # ============================================================
 
-USE_KEEPA: bool = os.getenv("USE_KEEPA", "1") == "1"  # ora lo vuoi ON
+USE_KEEPA: bool = os.getenv("USE_KEEPA", "0") == "1"
 KEEPA_API_KEY: str = os.getenv("KEEPA_API_KEY", "").strip()
 
 # Cache per evitare chiamate duplicate
-# asin -> (ts, PriceData)
 _PRICE_CACHE: Dict[str, Tuple[float, "PriceData"]] = {}
 PRICE_CACHE_TTL_SECONDS = 300  # 5 minuti
 
+# Log “startup” (utile in Render)
+logger.info(
+    "Pricing init | USE_KEEPA=%s | KEEPA_API_KEY present=%s | cache_ttl=%ss",
+    USE_KEEPA,
+    bool(KEEPA_API_KEY),
+    PRICE_CACHE_TTL_SECONDS,
+)
 
 # ============================================================
 # DATA STRUCTURE
@@ -40,7 +48,7 @@ class PriceData:
 # MOCK (fallback)
 # ============================================================
 
-def mock_prices_from_asin(asin: str):
+def mock_prices_from_asin(asin: str) -> PriceData:
     base = sum(ord(c) for c in asin)
 
     price_now = 19.9 + (base % 280) + ((base % 9) * 0.1)
@@ -68,8 +76,8 @@ def mock_prices_from_asin(asin: str):
 
 def _keepa_price_to_eur(value: Optional[int]) -> Optional[float]:
     """
-    Keepa ritorna spesso prezzi in centesimi (int).
-    Valori <= 0 o None significano "non disponibile".
+    Keepa spesso ritorna prezzi come interi in centesimi.
+    -1 / 0 / None -> non disponibile.
     """
     if value is None:
         return None
@@ -82,19 +90,18 @@ def _keepa_price_to_eur(value: Optional[int]) -> Optional[float]:
     return round(v / 100.0, 2)
 
 
-async def _fetch_keepa_stats_90(asin: str) -> Optional[Tuple[float, float]]:
+async def _fetch_keepa_stats_90(asin: str) -> Tuple[float, float]:
     """
-    Ritorna (price_now, lowest_90) oppure None se non riesce.
-    Usa stats=90 e history=0 per essere leggero.
+    Ritorna (price_now, lowest_90).
+    Se fallisce, solleva eccezione con motivo (così logghiamo bene).
     """
-    # Se non c'è la key, non possiamo fare nulla
     if not KEEPA_API_KEY:
-        return None
+        raise RuntimeError("KEEPA_API_KEY missing")
 
     url = "https://api.keepa.com/product"
     params = {
         "key": KEEPA_API_KEY,
-        "domain": "IT",
+        "domain": "IT",   # Keepa accetta IT come domain string  [oai_citation:0‡keepaapi.readthedocs.io](https://keepaapi.readthedocs.io/en/stable/api_methods.html?utm_source=chatgpt.com)
         "asin": asin,
         "stats": 90,
         "history": 0,
@@ -104,46 +111,53 @@ async def _fetch_keepa_stats_90(asin: str) -> Optional[Tuple[float, float]]:
 
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(url, params=params) as resp:
-            if resp.status != 200:
-                return None
-            data = await resp.json()
+            status = resp.status
+            text = await resp.text()
+            if status != 200:
+                raise RuntimeError(f"HTTP {status}: {text[:200]}")
 
-    # Keepa tipicamente usa "products": [ ... ]
+            try:
+                data = await resp.json()
+            except Exception:
+                raise RuntimeError(f"JSON parse failed: {text[:200]}")
+
+    # Keepa può anche rispondere con errori “logici”
+    if isinstance(data, dict):
+        if data.get("error"):
+            raise RuntimeError(f"Keepa error: {data.get('error')}")
+        if data.get("products") is None:
+            raise RuntimeError(f"No 'products' in response (keys={list(data.keys())})")
+
     products = data.get("products") or []
     if not products:
-        return None
+        raise RuntimeError("Empty products[]")
 
     p0 = products[0]
     stats = p0.get("stats")
     if not stats:
-        return None
+        raise RuntimeError("No stats in product")
 
-    # stats.current / stats.min sono array (varie "serie prezzi": AMAZON, NEW, ecc.)
-    # Senza buybox (che costa più token) prendiamo:
-    # - prima AMAZON (index 0)
-    # - fallback NEW (index 1)
     current_arr = stats.get("current") or []
     min_arr = stats.get("min") or []
 
-    def _safe_get(arr, idx):
+    def safe_get(arr, idx):
         try:
             return arr[idx]
         except Exception:
             return None
 
-    # TENTATIVO 1: AMAZON
-    cur_amz = _keepa_price_to_eur(_safe_get(current_arr, 0))
-    min_amz = _keepa_price_to_eur(_safe_get(min_arr, 0))
+    # Indici standard: AMAZON=0, NEW=1 (mapping tipico Keepa)  [oai_citation:1‡keepaapi.readthedocs.io](https://keepaapi.readthedocs.io/en/stable/api_methods.html?utm_source=chatgpt.com)
+    cur_amz = _keepa_price_to_eur(safe_get(current_arr, 0))
+    min_amz = _keepa_price_to_eur(safe_get(min_arr, 0))
 
-    # TENTATIVO 2: NEW marketplace
-    cur_new = _keepa_price_to_eur(_safe_get(current_arr, 1))
-    min_new = _keepa_price_to_eur(_safe_get(min_arr, 1))
+    cur_new = _keepa_price_to_eur(safe_get(current_arr, 1))
+    min_new = _keepa_price_to_eur(safe_get(min_arr, 1))
 
     price_now = cur_amz or cur_new
     lowest_90 = min_amz or min_new
 
     if price_now is None:
-        return None
+        raise RuntimeError(f"No current price available (current={current_arr[:5]})")
 
     if lowest_90 is None:
         lowest_90 = price_now
@@ -152,47 +166,42 @@ async def _fetch_keepa_stats_90(asin: str) -> Optional[Tuple[float, float]]:
 
 
 # ============================================================
-# SINGLE ENTRY POINT (used by handlers + watcher)
+# SINGLE ENTRY POINT
 # ============================================================
 
 async def get_price_data(asin: str) -> PriceData:
     """
-    Unico punto prezzi:
-    - prova Keepa (se USE_KEEPA e key presente)
+    - Keepa se abilitato
     - fallback mock se Keepa fallisce
     - cache TTL per evitare chiamate duplicate
     """
     now = time.time()
 
-    # cache
     cached = _PRICE_CACHE.get(asin)
     if cached:
         ts, pdata = cached
         if now - ts <= PRICE_CACHE_TTL_SECONDS:
             return pdata
 
-    # Keepa
-    if USE_KEEPA and KEEPA_API_KEY:
+    if USE_KEEPA:
         try:
-            res = await _fetch_keepa_stats_90(asin)
-            if res:
-                price_now, lowest_90 = res
-                pdata = PriceData(
-                    price_now=price_now,
-                    lowest_90=lowest_90,
-                    forecast=price_now,  # per ora non lo usiamo davvero
-                    lo=price_now,
-                    hi=price_now,
-                    min_date=datetime.now(),  # placeholder
-                    likely_days=3,            # placeholder
-                )
-                _PRICE_CACHE[asin] = (now, pdata)
-                return pdata
-        except Exception:
-            # fallback sotto
-            pass
+            price_now, lowest_90 = await _fetch_keepa_stats_90(asin)
+            pdata = PriceData(
+                price_now=price_now,
+                lowest_90=lowest_90,
+                forecast=price_now,
+                lo=price_now,
+                hi=price_now,
+                min_date=datetime.now(),
+                likely_days=3,
+            )
+            _PRICE_CACHE[asin] = (now, pdata)
+            logger.info("Keepa OK | asin=%s | now=%.2f | low90=%.2f", asin, price_now, lowest_90)
+            return pdata
 
-    # fallback mock
+        except Exception as e:
+            logger.warning("Keepa failed -> fallback mock | asin=%s | reason=%s", asin, str(e))
+
     pdata = mock_prices_from_asin(asin)
     _PRICE_CACHE[asin] = (now, pdata)
     return pdata
@@ -261,11 +270,10 @@ async def expand_amazon_url(text: str) -> str:
 
 
 # ============================================================
-# OLD SUGGEST THRESHOLDS (lasciamo)
+# THRESHOLDS (legacy + recommended)
 # ============================================================
 
 def suggest_thresholds(asin: str):
-    # usa mock per le 3 soglie legacy (non ti cambia UX per ora)
     pdata = mock_prices_from_asin(asin)
     price_now = pdata.price_now
     lowest_90 = pdata.lowest_90
