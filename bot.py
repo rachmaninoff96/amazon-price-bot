@@ -1,6 +1,12 @@
 import logging
 import os
 
+logging.getLogger(__name__).warning(
+    "BOOT CHECK | USE_KEEPA=%s | KEEPA_API_KEY present=%s",
+    os.getenv("USE_KEEPA"),
+    bool(os.getenv("KEEPA_API_KEY")),
+)
+
 from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
