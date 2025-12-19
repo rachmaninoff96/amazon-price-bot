@@ -1,27 +1,32 @@
 import os
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Dict, Tuple, Optional
 
 import aiohttp
 
 
 # ============================================================
-#  STEP 2 - KEEP A-READY (senza attivare Keepa)
+# CONFIG
 # ============================================================
 
-# Flag di configurazione:
-# - di default è False (quindi NON cambia nulla)
-# - in futuro potrai attivarlo con variabile ambiente USE_KEEPA=1
-USE_KEEPA: bool = os.getenv("USE_KEEPA", "0") == "1"
+USE_KEEPA: bool = os.getenv("USE_KEEPA", "1") == "1"  # ora lo vuoi ON
+KEEPA_API_KEY: str = os.getenv("KEEPA_API_KEY", "").strip()
 
+# Cache per evitare chiamate duplicate
+# asin -> (ts, PriceData)
+_PRICE_CACHE: Dict[str, Tuple[float, "PriceData"]] = {}
+PRICE_CACHE_TTL_SECONDS = 300  # 5 minuti
+
+
+# ============================================================
+# DATA STRUCTURE
+# ============================================================
 
 @dataclass(frozen=True)
 class PriceData:
-    """
-    Struttura unica per i dati prezzo.
-    Oggi è identica ai mock. In futuro sarà alimentata anche da Keepa.
-    """
     price_now: float
     lowest_90: float
     forecast: float
@@ -30,101 +35,23 @@ class PriceData:
     min_date: datetime
     likely_days: int
 
-    def as_tuple(self):
-        """Compatibilità: ritorna la stessa tupla di mock_prices_from_asin()."""
-        return (
-            self.price_now,
-            self.lowest_90,
-            self.forecast,
-            self.lo,
-            self.hi,
-            self.min_date,
-            self.likely_days,
-        )
-
-
-def get_price_data(asin: str) -> PriceData:
-    """
-    Punto unico di accesso ai prezzi.
-    - Se USE_KEEPA = False -> usa i mock (comportamento attuale)
-    - Se USE_KEEPA = True  -> placeholder Keepa (NON IMPLEMENTATO, niente chiamate reali)
-    """
-    if USE_KEEPA:
-        return _keepa_price_data_placeholder(asin)
-
-    return _mock_price_data(asin)
-
-
-def _mock_price_data(asin: str) -> PriceData:
-    p = mock_prices_from_asin(asin)
-    return PriceData(*p)
-
-
-def _keepa_price_data_placeholder(asin: str) -> PriceData:
-    """
-    Placeholder: non fa nessuna chiamata Keepa reale.
-    In futuro verrà sostituito con una funzione che chiama Keepa.
-    """
-    raise NotImplementedError("Keepa non è attivo: USE_KEEPA=1 richiede implementazione Keepa.")
-
 
 # ============================================================
-#  SOGLIA CONSIGLIATA "INTELLIGENTE" (semplice ma utile)
-# ============================================================
-
-def get_recommended_threshold(asin: str):
-    """
-    Restituisce una soglia consigliata "raggiungibile" + una stima semplice.
-    Output: (recommended_price, likely_days, saving_pct)
-
-    Oggi usa i dati mock (via get_price_data).
-    Domani userà Keepa (stessa funzione, stesso output).
-    """
-    pdata = get_price_data(asin)
-    current = float(pdata.price_now)
-
-    # Strategia "raggiungibile": target ~ -5% dal prezzo attuale
-    # (è volutamente prudente per generare notifiche e abitudine)
-    target = round(current * 0.95, 2)
-
-    # Sicurezze
-    if target <= 0:
-        target = max(0.01, round(current * 0.95, 2))
-
-    # Giorni stimati: oggi è mock, domani con Keepa sarà migliore
-    days = int(pdata.likely_days)
-
-    # Risparmio %
-    saving_pct = 0.0
-    if current > 0:
-        saving_pct = (current - target) / current * 100.0
-
-    return target, days, saving_pct
-
-
-# ============================================================
-#  MOCK PREZZI (stile Keepa)
+# MOCK (fallback)
 # ============================================================
 
 def mock_prices_from_asin(asin: str):
-    """
-    Generatore di prezzi fittizi stabile, utile finché non usi Keepa.
-    """
     base = sum(ord(c) for c in asin)
 
-    # prezzo attuale
     price_now = 19.9 + (base % 280) + ((base % 9) * 0.1)
     price_now = round(price_now, 2)
 
-    # minimo 90 giorni
-    pct = 0.05 + (base % 26) / 100.0  # tra 5% e 30%
+    pct = 0.05 + (base % 26) / 100.0
     lowest_90 = round(price_now * (1 - pct), 2)
 
-    # data del minimo
     days_ago = (base % 90) + 1
     min_date = datetime.now() - timedelta(days=days_ago)
 
-    # previsione 7 giorni
     delta_pct = ((base % 15) - 7) / 100.0
     forecast = round(price_now * (1 + delta_pct), 2)
     lo = round(forecast * 0.95, 2)
@@ -132,11 +59,147 @@ def mock_prices_from_asin(asin: str):
 
     likely_days = 1 + (base % 7)
 
-    return price_now, lowest_90, forecast, lo, hi, min_date, likely_days
+    return PriceData(price_now, lowest_90, forecast, lo, hi, min_date, likely_days)
 
 
 # ============================================================
-#  AFFILIATE LINK
+# KEEPA (real)
+# ============================================================
+
+def _keepa_price_to_eur(value: Optional[int]) -> Optional[float]:
+    """
+    Keepa ritorna spesso prezzi in centesimi (int).
+    Valori <= 0 o None significano "non disponibile".
+    """
+    if value is None:
+        return None
+    try:
+        v = int(value)
+    except Exception:
+        return None
+    if v <= 0:
+        return None
+    return round(v / 100.0, 2)
+
+
+async def _fetch_keepa_stats_90(asin: str) -> Optional[Tuple[float, float]]:
+    """
+    Ritorna (price_now, lowest_90) oppure None se non riesce.
+    Usa stats=90 e history=0 per essere leggero.
+    """
+    # Se non c'è la key, non possiamo fare nulla
+    if not KEEPA_API_KEY:
+        return None
+
+    url = "https://api.keepa.com/product"
+    params = {
+        "key": KEEPA_API_KEY,
+        "domain": "IT",
+        "asin": asin,
+        "stats": 90,
+        "history": 0,
+    }
+
+    timeout = aiohttp.ClientTimeout(total=12)
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url, params=params) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+
+    # Keepa tipicamente usa "products": [ ... ]
+    products = data.get("products") or []
+    if not products:
+        return None
+
+    p0 = products[0]
+    stats = p0.get("stats")
+    if not stats:
+        return None
+
+    # stats.current / stats.min sono array (varie "serie prezzi": AMAZON, NEW, ecc.)
+    # Senza buybox (che costa più token) prendiamo:
+    # - prima AMAZON (index 0)
+    # - fallback NEW (index 1)
+    current_arr = stats.get("current") or []
+    min_arr = stats.get("min") or []
+
+    def _safe_get(arr, idx):
+        try:
+            return arr[idx]
+        except Exception:
+            return None
+
+    # TENTATIVO 1: AMAZON
+    cur_amz = _keepa_price_to_eur(_safe_get(current_arr, 0))
+    min_amz = _keepa_price_to_eur(_safe_get(min_arr, 0))
+
+    # TENTATIVO 2: NEW marketplace
+    cur_new = _keepa_price_to_eur(_safe_get(current_arr, 1))
+    min_new = _keepa_price_to_eur(_safe_get(min_arr, 1))
+
+    price_now = cur_amz or cur_new
+    lowest_90 = min_amz or min_new
+
+    if price_now is None:
+        return None
+
+    if lowest_90 is None:
+        lowest_90 = price_now
+
+    return price_now, lowest_90
+
+
+# ============================================================
+# SINGLE ENTRY POINT (used by handlers + watcher)
+# ============================================================
+
+async def get_price_data(asin: str) -> PriceData:
+    """
+    Unico punto prezzi:
+    - prova Keepa (se USE_KEEPA e key presente)
+    - fallback mock se Keepa fallisce
+    - cache TTL per evitare chiamate duplicate
+    """
+    now = time.time()
+
+    # cache
+    cached = _PRICE_CACHE.get(asin)
+    if cached:
+        ts, pdata = cached
+        if now - ts <= PRICE_CACHE_TTL_SECONDS:
+            return pdata
+
+    # Keepa
+    if USE_KEEPA and KEEPA_API_KEY:
+        try:
+            res = await _fetch_keepa_stats_90(asin)
+            if res:
+                price_now, lowest_90 = res
+                pdata = PriceData(
+                    price_now=price_now,
+                    lowest_90=lowest_90,
+                    forecast=price_now,  # per ora non lo usiamo davvero
+                    lo=price_now,
+                    hi=price_now,
+                    min_date=datetime.now(),  # placeholder
+                    likely_days=3,            # placeholder
+                )
+                _PRICE_CACHE[asin] = (now, pdata)
+                return pdata
+        except Exception:
+            # fallback sotto
+            pass
+
+    # fallback mock
+    pdata = mock_prices_from_asin(asin)
+    _PRICE_CACHE[asin] = (now, pdata)
+    return pdata
+
+
+# ============================================================
+# AFFILIATE LINK
 # ============================================================
 
 def affiliate_link_it(asin: str, tag: str = "amztracker0c-21"):
@@ -144,13 +207,10 @@ def affiliate_link_it(asin: str, tag: str = "amztracker0c-21"):
 
 
 # ============================================================
-#  NOME AUTOMATICO DAL LINK AMAZON
+# NAME FROM URL
 # ============================================================
 
 def clean_text(name: str) -> str:
-    """
-    Pulisce e accorcia il testo in modo sicuro.
-    """
     name = re.sub(r"[-_/]+", " ", name)
     name = re.sub(r"\s+", " ", name).strip()
     if len(name) > 60:
@@ -159,9 +219,6 @@ def clean_text(name: str) -> str:
 
 
 def auto_short_name_from_url(url: str, asin: str) -> str:
-    """
-    Estrarre un nome umano dal link Amazon.
-    """
     try:
         m = re.search(r"/dp/[^/]+/([^/?#]+)", url, flags=re.IGNORECASE)
         if m:
@@ -182,14 +239,10 @@ def auto_short_name_from_url(url: str, asin: str) -> str:
 
 
 # ============================================================
-#  EXPAND LINK CORTI AMAZON
+# EXPAND SHORT URL
 # ============================================================
 
 async def expand_amazon_url(text: str) -> str:
-    """
-    Segue redirect dei link corti amzn.to, amzn.eu, amzn.*.
-    Restituisce il link finale.
-    """
     m = re.search(r"(https?://\S+)", text)
     if not m:
         return text
@@ -208,14 +261,25 @@ async def expand_amazon_url(text: str) -> str:
 
 
 # ============================================================
-#  SOGLIE CONSIGLIATE (vecchie, le lasciamo come alternative)
+# OLD SUGGEST THRESHOLDS (lasciamo)
 # ============================================================
 
 def suggest_thresholds(asin: str):
-    price_now, lowest_90, *_ = mock_prices_from_asin(asin)
+    # usa mock per le 3 soglie legacy (non ti cambia UX per ora)
+    pdata = mock_prices_from_asin(asin)
+    price_now = pdata.price_now
+    lowest_90 = pdata.lowest_90
 
     s1 = round(price_now * 0.95, 2)
     s2 = round(price_now * 0.90, 2)
     s3 = round(max(lowest_90, price_now * 0.88), 2)
-
     return [s1, s2, s3]
+
+
+async def get_recommended_threshold(asin: str):
+    pdata = await get_price_data(asin)
+    current = float(pdata.price_now)
+    target = round(current * 0.95, 2)
+    days = int(pdata.likely_days)
+    saving_pct = (current - target) / current * 100.0 if current > 0 else 0.0
+    return target, days, saving_pct
