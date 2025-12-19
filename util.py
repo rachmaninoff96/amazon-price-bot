@@ -2,7 +2,6 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional
 
 import aiohttp
 
@@ -51,11 +50,8 @@ def get_price_data(asin: str) -> PriceData:
     - Se USE_KEEPA = True  -> placeholder Keepa (NON IMPLEMENTATO, niente chiamate reali)
     """
     if USE_KEEPA:
-        # In futuro qui chiameremo Keepa.
-        # Per ora NON vogliamo attivare Keepa, quindi lasciamo un placeholder sicuro.
         return _keepa_price_data_placeholder(asin)
 
-    # Default: mock identico a oggi
     return _mock_price_data(asin)
 
 
@@ -70,6 +66,40 @@ def _keepa_price_data_placeholder(asin: str) -> PriceData:
     In futuro verrà sostituito con una funzione che chiama Keepa.
     """
     raise NotImplementedError("Keepa non è attivo: USE_KEEPA=1 richiede implementazione Keepa.")
+
+
+# ============================================================
+#  SOGLIA CONSIGLIATA "INTELLIGENTE" (semplice ma utile)
+# ============================================================
+
+def get_recommended_threshold(asin: str):
+    """
+    Restituisce una soglia consigliata "raggiungibile" + una stima semplice.
+    Output: (recommended_price, likely_days, saving_pct)
+
+    Oggi usa i dati mock (via get_price_data).
+    Domani userà Keepa (stessa funzione, stesso output).
+    """
+    pdata = get_price_data(asin)
+    current = float(pdata.price_now)
+
+    # Strategia "raggiungibile": target ~ -5% dal prezzo attuale
+    # (è volutamente prudente per generare notifiche e abitudine)
+    target = round(current * 0.95, 2)
+
+    # Sicurezze
+    if target <= 0:
+        target = max(0.01, round(current * 0.95, 2))
+
+    # Giorni stimati: oggi è mock, domani con Keepa sarà migliore
+    days = int(pdata.likely_days)
+
+    # Risparmio %
+    saving_pct = 0.0
+    if current > 0:
+        saving_pct = (current - target) / current * 100.0
+
+    return target, days, saving_pct
 
 
 # ============================================================
@@ -131,30 +161,24 @@ def clean_text(name: str) -> str:
 def auto_short_name_from_url(url: str, asin: str) -> str:
     """
     Estrarre un nome umano dal link Amazon.
-    Funziona molto meglio del tuo precedente sistema.
     """
     try:
-        # caso 1: /dp/qualcosa/slug
         m = re.search(r"/dp/[^/]+/([^/?#]+)", url, flags=re.IGNORECASE)
         if m:
             return clean_text(m.group(1)).title()
 
-        # caso 2: path prima di /dp/
         m = re.search(r"amazon\.[^/]+/([^/]+)/dp/", url, flags=re.IGNORECASE)
         if m:
             return clean_text(m.group(1)).title()
 
-        # caso 3: keywords=xxx
         m = re.search(r"[\?&]keywords=([^&]+)", url, flags=re.IGNORECASE)
         if m:
             kw = m.group(1).replace("+", " ").strip()
             return clean_text(kw).title()
-
     except Exception:
         pass
 
-    # fallback sicuro
-    return f"Prodotto"
+    return "Prodotto"
 
 
 # ============================================================
@@ -184,7 +208,7 @@ async def expand_amazon_url(text: str) -> str:
 
 
 # ============================================================
-#  SOGLIE CONSIGLIATE
+#  SOGLIE CONSIGLIATE (vecchie, le lasciamo come alternative)
 # ============================================================
 
 def suggest_thresholds(asin: str):
