@@ -109,7 +109,7 @@ def mock_prices_from_asin(asin: str):
 #  AFFILIATE LINK
 # ============================================================
 
-def affiliate_link_it(asin: str, tag: str = "tuo-tag-21"):
+def affiliate_link_it(asin: str, tag: str = "amztracker0c-21"):
     return f"https://www.amazon.it/dp/{asin}?tag={tag}"
 
 
