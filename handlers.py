@@ -113,7 +113,7 @@ async def format_price_card(asin: str, url: str) -> str:
     txt = (
         f"🛒 <b>{name}</b>\n\n"
         f"💶 Prezzo attuale: <b>€{price_now:.2f}</b>\n"
-        f"📉 Minimo 90 giorni: <b>€{lowest_90:.2f}</b> <i>({min_date_str})</i>\n"
+       f"📉 Minimo 90 giorni: <b>€{lowest_90:.2f}</b> <i>(ultimi 90gg)</i>\n"
         f"📈 Previsione 7gg: <b>€{forecast:.2f}</b> (±5% → {lo:.2f}–{hi:.2f})\n\n"
         f"💡 <b>Consiglio</b>: potrebbe arrivare a <b>€{rec_price:.2f}</b> entro <b>~{rec_days} giorni</b> "
         f"(risparmio ~<b>{rec_pct:.0f}%</b>).\n"
