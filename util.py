@@ -1,8 +1,75 @@
+import os
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
 
 import aiohttp
+
+
+# ============================================================
+#  STEP 2 - KEEP A-READY (senza attivare Keepa)
+# ============================================================
+
+# Flag di configurazione:
+# - di default è False (quindi NON cambia nulla)
+# - in futuro potrai attivarlo con variabile ambiente USE_KEEPA=1
+USE_KEEPA: bool = os.getenv("USE_KEEPA", "0") == "1"
+
+
+@dataclass(frozen=True)
+class PriceData:
+    """
+    Struttura unica per i dati prezzo.
+    Oggi è identica ai mock. In futuro sarà alimentata anche da Keepa.
+    """
+    price_now: float
+    lowest_90: float
+    forecast: float
+    lo: float
+    hi: float
+    min_date: datetime
+    likely_days: int
+
+    def as_tuple(self):
+        """Compatibilità: ritorna la stessa tupla di mock_prices_from_asin()."""
+        return (
+            self.price_now,
+            self.lowest_90,
+            self.forecast,
+            self.lo,
+            self.hi,
+            self.min_date,
+            self.likely_days,
+        )
+
+
+def get_price_data(asin: str) -> PriceData:
+    """
+    Punto unico di accesso ai prezzi.
+    - Se USE_KEEPA = False -> usa i mock (comportamento attuale)
+    - Se USE_KEEPA = True  -> placeholder Keepa (NON IMPLEMENTATO, niente chiamate reali)
+    """
+    if USE_KEEPA:
+        # In futuro qui chiameremo Keepa.
+        # Per ora NON vogliamo attivare Keepa, quindi lasciamo un placeholder sicuro.
+        return _keepa_price_data_placeholder(asin)
+
+    # Default: mock identico a oggi
+    return _mock_price_data(asin)
+
+
+def _mock_price_data(asin: str) -> PriceData:
+    p = mock_prices_from_asin(asin)
+    return PriceData(*p)
+
+
+def _keepa_price_data_placeholder(asin: str) -> PriceData:
+    """
+    Placeholder: non fa nessuna chiamata Keepa reale.
+    In futuro verrà sostituito con una funzione che chiama Keepa.
+    """
+    raise NotImplementedError("Keepa non è attivo: USE_KEEPA=1 richiede implementazione Keepa.")
 
 
 # ============================================================
