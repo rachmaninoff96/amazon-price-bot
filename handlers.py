@@ -1,4 +1,5 @@
 import re
+import asyncio
 import logging
 from typing import Dict, List, Tuple
 
@@ -76,64 +77,57 @@ def kb_suggest_thresholds(asin: str):
     return kb.as_markup()
 
 
-def kb_quick_threshold(asin: str, rec_price: float):
-    kb = InlineKeyboardBuilder()
-    kb.button(
-        text=f"✅ Imposta consigliata: €{rec_price:.2f}",
-        callback_data=f"setthr:{asin}:{rec_price:.2f}",
-    )
-    kb.button(text="🎯 Altre soglie", callback_data=f"suggest:{asin}")
-    kb.button(text="✍️ Soglia manuale", callback_data=f"watch:{asin}")
-    kb.button(text="🛒 Acquista su Amazon", url=affiliate_link_it(asin))
-    kb.button(text="🏠 Home", callback_data="home")
-    kb.adjust(1)
-    return kb.as_markup()
-
-
 # ========== FORMATTER ==========
 
 async def format_price_card(asin: str, url: str) -> str:
     pdata = await get_price_data(asin)
+    rec_price, rec_days, rec_pct, state, advice = await get_recommended_threshold(asin)
 
-    price_now = pdata.price_now
-    lowest_90 = pdata.lowest_90
-
-    # campi legacy (restano “placeholder” finché non li implementiamo davvero con Keepa)
-    forecast = pdata.forecast
-    lo = pdata.lo
-    hi = pdata.hi
-    min_date = pdata.min_date
-    likely_days = pdata.likely_days
-
-    min_date_str = min_date.strftime("%d/%m/%Y")
     name = find_name_for_asin(asin) or auto_short_name_from_url(url, asin)
-
-    rec_price, rec_days, rec_pct = await get_recommended_threshold(asin)
 
     txt = (
         f"🛒 <b>{name}</b>\n\n"
-        f"💶 Prezzo attuale: <b>€{price_now:.2f}</b>\n"
-       f"📉 Minimo 90 giorni: <b>€{lowest_90:.2f}</b> <i>(ultimi 90gg)</i>\n"
-        f"📈 Previsione 7gg: <b>€{forecast:.2f}</b> (±5% → {lo:.2f}–{hi:.2f})\n\n"
-        f"💡 <b>Consiglio</b>: potrebbe arrivare a <b>€{rec_price:.2f}</b> entro <b>~{rec_days} giorni</b> "
-        f"(risparmio ~<b>{rec_pct:.0f}%</b>).\n"
+        f"💶 Prezzo attuale: <b>€{pdata.price_now:.2f}</b>\n"
+        f"📉 Minimo 90 giorni: <b>€{pdata.lowest_90:.2f}</b> <i>(ultimi 90gg)</i>\n"
+        f"📊 Media 90 giorni: <b>€{pdata.avg_90:.2f}</b> <i>(ultimi 90gg)</i>\n"
+        f"📈 Previsione 7gg: <b>€{pdata.forecast_7d:.2f}</b> (range → {pdata.lo_7d:.2f}–{pdata.hi_7d:.2f})\n\n"
     )
+
+    if state == "GOOD_NOW":
+        txt += f"💡 {advice}\n"
+    elif state == "RIGID":
+        txt += f"💡 {advice}\n"
+    else:
+        txt += (
+            f"💡 <b>Consiglio</b>: soglia raggiungibile <b>€{rec_price:.2f}</b> entro <b>~{rec_days} giorni</b> "
+            f"(risparmio ~<b>{rec_pct:.0f}%</b>).\n"
+            f"{advice}\n"
+        )
+
     return txt
 
 
 async def _render_products_list(items: List[dict], title: str = "📋 <b>I miei prodotti</b>") -> Tuple[str, object]:
+    # Per non fare 1 richiesta alla volta (più lento), usiamo gather
+    asins = [w["asin"] for w in items]
+    price_datas = await asyncio.gather(*(get_price_data(a) for a in asins), return_exceptions=True)
+
     lines = []
-    for w in items:
+    for w, pdata in zip(items, price_datas):
         asin = w["asin"]
         name = w.get("name") or "Prodotto"
         thr = w.get("threshold")
 
-        price_now = (await get_price_data(asin)).price_now
+        if isinstance(pdata, Exception):
+            price_now = "—"
+        else:
+            price_now = f"€{pdata.price_now:.2f}"
 
         thr_txt = f"€{thr:.2f}" if isinstance(thr, (int, float)) else "—"
+
         lines.append(
             f"• <b>{name}</b>\n"
-            f"  Prezzo attuale: <b>€{price_now:.2f}</b>\n"
+            f"  Prezzo attuale: <b>{price_now}</b>\n"
             f"  Soglia: {thr_txt}\n"
         )
 
@@ -181,7 +175,7 @@ async def cb_help(c: CallbackQuery):
         "Puoi anche:\n"
         "• Rinominare il prodotto\n"
         "• Eliminare dalla lista\n"
-        "• Vedere i prezzi attuali nella lista",
+        "• Aprire Amazon dal bottone 🛒",
         reply_markup=kb_home(),
         parse_mode="HTML",
     )
@@ -203,7 +197,10 @@ async def cb_list(c: CallbackQuery):
     items = get_watches_for_chat(chat_id)
 
     if not items:
-        await c.message.edit_text("📭 Non hai prodotti salvati.", reply_markup=kb_home())
+        await c.message.edit_text(
+            "📭 Non hai prodotti salvati.",
+            reply_markup=kb_home(),
+        )
         await c.answer()
         return
 
@@ -216,9 +213,26 @@ async def cb_list(c: CallbackQuery):
 async def cb_manage(c: CallbackQuery):
     asin = c.data.split(":", 1)[1]
     ensure_watch(c.message.chat.id, asin)
-    url = affiliate_link_it(asin)
-    card = await format_price_card(asin, url)
-    await c.message.edit_text(card, reply_markup=kb_product_actions(asin), parse_mode="HTML")
+    card = await format_price_card(asin, f"https://www.amazon.it/dp/{asin}")
+    await c.message.edit_text(
+        card,
+        reply_markup=kb_product_actions(asin),
+        parse_mode="HTML",
+    )
+    await c.answer()
+
+
+# ========== FIX BACK BUTTON SUGGEST ==========
+@router.callback_query(F.data.startswith("backprod:"))
+async def cb_backprod(c: CallbackQuery):
+    asin = c.data.split(":", 1)[1]
+    ensure_watch(c.message.chat.id, asin)
+    card = await format_price_card(asin, f"https://www.amazon.it/dp/{asin}")
+    await c.message.edit_text(
+        card,
+        reply_markup=kb_product_actions(asin),
+        parse_mode="HTML",
+    )
     await c.answer()
 
 
@@ -228,7 +242,10 @@ async def cb_manage(c: CallbackQuery):
 async def cb_rename(c: CallbackQuery):
     asin = c.data.split(":", 1)[1]
     PENDING_RENAME[c.message.chat.id] = asin
-    await c.message.answer("✍️ Invia il nuovo nome del prodotto:", reply_markup=kb_back_home())
+    await c.message.answer(
+        "✍️ Invia il nuovo nome del prodotto:",
+        reply_markup=kb_back_home(),
+    )
     await c.answer()
 
 
@@ -238,14 +255,20 @@ async def cb_rename(c: CallbackQuery):
 async def cb_watch(c: CallbackQuery):
     asin = c.data.split(":", 1)[1]
     PENDING_THRESHOLD[c.message.chat.id] = asin
-    await c.message.answer("✍️ Inserisci la soglia in euro (es. 79.90):", reply_markup=kb_back_home())
+    await c.message.answer(
+        "✍️ Inserisci la soglia in euro (es. 79.90):",
+        reply_markup=kb_back_home(),
+    )
     await c.answer()
 
 
 @router.callback_query(F.data.startswith("suggest:"))
 async def cb_suggest(c: CallbackQuery):
     asin = c.data.split(":", 1)[1]
-    await c.message.answer("🎯 Scegli una soglia consigliata:", reply_markup=kb_suggest_thresholds(asin))
+    await c.message.answer(
+        "🎯 Scegli una soglia consigliata:",
+        reply_markup=kb_suggest_thresholds(asin),
+    )
     await c.answer()
 
 
@@ -273,11 +296,14 @@ async def cb_delete(c: CallbackQuery):
     WATCHES[chat_id] = [w for w in WATCHES.get(chat_id, []) if w["asin"] != asin]
     save_state()
 
-    await c.message.answer("🗑️ Prodotto eliminato.", reply_markup=kb_home())
+    await c.message.answer(
+        "🗑️ Prodotto eliminato.",
+        reply_markup=kb_home(),
+    )
     await c.answer()
 
 
-# ========== CALLBACK DALLA NOTIFICA ==========
+# ========== CALLBACK DALLA NOTIFICA (A+) ==========
 
 @router.callback_query(F.data.startswith("continue:"))
 async def cb_continue(c: CallbackQuery):
@@ -288,23 +314,14 @@ async def cb_continue(c: CallbackQuery):
 async def cb_newthr(c: CallbackQuery):
     asin = c.data.split(":", 1)[1]
     PENDING_THRESHOLD[c.message.chat.id] = asin
-    await c.message.answer("✍️ Inserisci una nuova soglia:", reply_markup=kb_back_home())
+    await c.message.answer(
+        "✍️ Inserisci una nuova soglia:",
+        reply_markup=kb_back_home(),
+    )
     await c.answer()
 
 
-# ========== BUGFIX backprod ==========
-
-@router.callback_query(F.data.startswith("backprod:"))
-async def cb_backprod(c: CallbackQuery):
-    asin = c.data.split(":", 1)[1]
-    ensure_watch(c.message.chat.id, asin)
-    url = affiliate_link_it(asin)
-    card = await format_price_card(asin, url)
-    await c.message.edit_text(card, reply_markup=kb_product_actions(asin), parse_mode="HTML")
-    await c.answer()
-
-
-# ========== MESSAGGI GENERICI ==========
+# ========== MESSAGGI GENERICI (link Amazon) ==========
 
 @router.message()
 async def handle_message(m: Message):
@@ -318,17 +335,24 @@ async def handle_message(m: Message):
         item = get_watch(chat_id, asin)
         thr = item.get("threshold") if item else None
         set_or_update_watch(chat_id, asin, thr, name)
-        await m.answer(f"✍️ Nome aggiornato a <b>{name}</b>.", reply_markup=kb_home(), parse_mode="HTML")
+        await m.answer(
+            f"✍️ Nome aggiornato a <b>{name}</b>.",
+            reply_markup=kb_home(),
+            parse_mode="HTML",
+        )
         return
 
-    # Soglia manuale
+    # Soglia
     if chat_id in PENDING_THRESHOLD:
         asin = PENDING_THRESHOLD.pop(chat_id)
         candidate = text.replace(",", ".")
         try:
             value = float(candidate)
         except ValueError:
-            await m.answer("⚠️ Inserisci un numero valido (es. 79.90).", reply_markup=kb_back_home())
+            await m.answer(
+                "⚠️ Inserisci un numero valido (es. 79.90).",
+                reply_markup=kb_back_home(),
+            )
             return
         name = find_name_for_asin(asin)
         set_or_update_watch(chat_id, asin, value, name)
@@ -347,32 +371,16 @@ async def handle_message(m: Message):
             asin = m_asin.group(1)
             name = find_name_for_asin(asin) or auto_short_name_from_url(url, asin)
             ensure_watch(chat_id, asin, name)
-
             card = await format_price_card(asin, url)
-            rec_price, _, _ = await get_recommended_threshold(asin)
-
-            await m.answer(card, reply_markup=kb_quick_threshold(asin, rec_price), parse_mode="HTML")
+            await m.answer(
+                card,
+                reply_markup=kb_product_actions(asin),
+                parse_mode="HTML",
+            )
             return
 
-        await m.answer("Incolla un link Amazon 🙂", reply_markup=kb_home())
-        return
-
-    # Ricerca base (case-insensitive sui nomi)
-    query = text.lower().strip()
-    if query:
-        all_items = get_watches_for_chat(chat_id)
-        matches = []
-        for w in all_items:
-            name = (w.get("name") or "").lower()
-            if query in name:
-                matches.append(w)
-
-        if matches:
-            txt, kb = await _render_products_list(matches, title="🔍 <b>Risultati trovati</b>")
-            await m.answer(txt, reply_markup=kb, parse_mode="HTML")
-            return
-
-        await m.answer("Nessun prodotto trovato con questo nome.", reply_markup=kb_home())
-        return
-
-    await m.answer("Incolla un link Amazon 🙂", reply_markup=kb_home())
+    # fallback
+    await m.answer(
+        "Incolla un link Amazon 🙂",
+        reply_markup=kb_home(),
+    )
