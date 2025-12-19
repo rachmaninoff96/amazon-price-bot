@@ -5,7 +5,7 @@ from aiogram import Bot
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from models import WATCHES, save_state, find_name_for_asin
-from util import mock_prices_from_asin, affiliate_link_it
+from util import get_price_data, affiliate_link_it  # ✅ nuovo: prezzi dal punto unico
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +24,7 @@ def _cb_delete(asin: str):
 
 def watcher_notification_keyboard(asin: str):
     kb = InlineKeyboardBuilder()
-
-    # ✅ FEATURE 2: bottone acquisto affiliazione
     kb.button(text="🛒 Acquista su Amazon", url=affiliate_link_it(asin))
-
     kb.button(text="🔄 Continua a monitorare", callback_data=_cb_continua(asin))
     kb.button(text="⚙️ Imposta nuova soglia", callback_data=_cb_new_threshold(asin))
     kb.button(text="🗑️ Rimuovi", callback_data=_cb_delete(asin))
@@ -50,7 +47,9 @@ async def run_price_check_iteration(bot: Bot):
             if not isinstance(threshold, (int, float)):
                 continue
 
-            price_now, lowest_90, *_ = mock_prices_from_asin(asin)
+            # ✅ prezzo dal punto unico (mock finché USE_KEEPA=0)
+            price_now = get_price_data(asin).price_now
+
             last_price = w.get("last_notified_price")
             last_ts = w.get("last_notified_ts", 0)
 
@@ -58,15 +57,13 @@ async def run_price_check_iteration(bot: Bot):
             if now - last_ts < 12 * 3600:
                 continue
 
-            name = w.get("name") or find_name_for_asin(asin) or f"Prodotto"
+            name = w.get("name") or find_name_for_asin(asin) or "Prodotto"
 
             # Calcolo differenza soglia
             delta = price_now - threshold
-            ratio = delta / price_now if price_now != 0 else 1
 
             # --- Caso 1: SOTTO SOGLIA ---
             if price_now <= threshold:
-                # notifica solo se il prezzo è cambiato oppure mai notificato
                 if last_price is None or last_price != price_now:
                     text = (
                         "🎉 <b>Prezzo sotto soglia!</b>\n"

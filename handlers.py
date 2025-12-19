@@ -17,7 +17,7 @@ from models import (
     save_state,
 )
 from util import (
-    mock_prices_from_asin,
+    get_price_data,              # ✅ nuovo: punto unico prezzi
     affiliate_link_it,
     auto_short_name_from_url,
     expand_amazon_url,
@@ -54,7 +54,7 @@ def kb_back_home():
 def kb_product_actions(asin: str):
     kb = InlineKeyboardBuilder()
 
-    # ✅ FEATURE 2: bottone dedicato acquisto (URL affiliato)
+    # ✅ bottone acquisto affiliato
     kb.button(text="🛒 Acquista su Amazon", url=affiliate_link_it(asin))
 
     kb.button(text="➕ Imposta soglia", callback_data=f"watch:{asin}")
@@ -72,10 +72,7 @@ def kb_suggest_thresholds(asin: str):
     kb.button(text=f"−5% → €{s1}", callback_data=f"setthr:{asin}:{s1}")
     kb.button(text=f"−10% → €{s2}", callback_data=f"setthr:{asin}:{s2}")
     kb.button(text=f"Vicino min → €{s3}", callback_data=f"setthr:{asin}:{s3}")
-
-    # ✅ BUG FIX 1: tasto indietro con callback backprod:{asin}
     kb.button(text="⬅️ Indietro", callback_data=f"backprod:{asin}")
-
     kb.button(text="🏠 Home", callback_data="home")
     kb.adjust(1)
     return kb.as_markup()
@@ -84,7 +81,17 @@ def kb_suggest_thresholds(asin: str):
 # ========== FORMATTER ==========
 
 def format_price_card(asin: str, url: str):
-    price_now, lowest_90, forecast, lo, hi, min_date, likely_days = mock_prices_from_asin(asin)
+    # ✅ ora passa dal punto unico prezzi (mock finché USE_KEEPA=0)
+    pdata = get_price_data(asin)
+
+    price_now = pdata.price_now
+    lowest_90 = pdata.lowest_90
+    forecast = pdata.forecast
+    lo = pdata.lo
+    hi = pdata.hi
+    min_date = pdata.min_date
+    likely_days = pdata.likely_days
+
     min_date_str = min_date.strftime("%d/%m/%Y")
     name = find_name_for_asin(asin) or auto_short_name_from_url(url, asin)
 
@@ -154,19 +161,25 @@ def _render_products_list(items: list[dict], title: str = "📋 <b>I miei prodot
         asin = w["asin"]
         name = w.get("name") or "Prodotto"
         thr = w.get("threshold")
-        price_now, *_ = mock_prices_from_asin(asin)
+
+        # ✅ prezzo dal punto unico
+        price_now = get_price_data(asin).price_now
+
         thr_txt = f"€{thr:.2f}" if isinstance(thr, (int, float)) else "—"
         lines.append(
             f"• <b>{name}</b>\n"
             f"  Prezzo attuale: <b>€{price_now:.2f}</b>\n"
             f"  Soglia: {thr_txt}\n"
         )
+
     txt = f"{title}\n\n" + ("\n".join(lines) if lines else "—")
+
     kb = InlineKeyboardBuilder()
     for w in items:
         kb.button(text=w.get("name") or "Prodotto", callback_data=f"manage:{w['asin']}")
     kb.button(text="🏠 Home", callback_data="home")
     kb.adjust(1)
+
     return txt, kb.as_markup()
 
 
@@ -287,9 +300,8 @@ async def cb_newthr(c: CallbackQuery):
     await c.answer()
 
 
-# =========================================================
-#  ✅ BUG FIX 1: handler backprod:{asin}
-# =========================================================
+# ========== BUGFIX backprod ==========
+
 @router.callback_query(F.data.startswith("backprod:"))
 async def cb_backprod(c: CallbackQuery):
     asin = c.data.split(":", 1)[1]
@@ -313,7 +325,7 @@ async def handle_message(m: Message):
     text = (m.text or "").strip()
     chat_id = m.chat.id
 
-    # ------------------ RINOMINA ------------------
+    # Rinomina
     if chat_id in PENDING_RENAME:
         asin = PENDING_RENAME.pop(chat_id)
         name = text
@@ -327,7 +339,7 @@ async def handle_message(m: Message):
         )
         return
 
-    # ------------------ SOGLIA ------------------
+    # Soglia
     if chat_id in PENDING_THRESHOLD:
         asin = PENDING_THRESHOLD.pop(chat_id)
         candidate = text.replace(",", ".")
@@ -348,7 +360,7 @@ async def handle_message(m: Message):
         )
         return
 
-    # ------------------ LINK AMAZON ------------------
+    # Link Amazon
     if "http" in text:
         url = await expand_amazon_url(text)
         m_asin = re.search(r"(?:dp|gp/product)/([A-Z0-9]{10})", url, flags=re.I)
@@ -364,13 +376,10 @@ async def handle_message(m: Message):
             )
             return
 
-        # se è un http non Amazon → fallback classico
         await m.answer("Incolla un link Amazon 🙂", reply_markup=kb_home())
         return
 
-    # =========================================================
-    # ✅ FEATURE 3: ricerca testuale tra prodotti salvati
-    # =========================================================
+    # Ricerca base
     query = text.lower().strip()
     if query:
         all_items = get_watches_for_chat(chat_id)
@@ -388,8 +397,5 @@ async def handle_message(m: Message):
         await m.answer("Nessun prodotto trovato con questo nome.", reply_markup=kb_home())
         return
 
-    # ------------------ FALLBACK FINALE ------------------
-    await m.answer(
-        "Incolla un link Amazon 🙂",
-        reply_markup=kb_home(),
-    )
+    # fallback
+    await m.answer("Incolla un link Amazon 🙂", reply_markup=kb_home())
