@@ -485,3 +485,16 @@ def suggest_thresholds(asin: str):
     s3 = round(max(lowest_90, price_now * 0.88), 2)
 
     return [s1, s2, s3]
+
+def simple_price_decision(price_now: float, min_90: float):
+    if not price_now or not min_90 or min_90 <= 0:
+        return "UNKNOWN", None
+
+    ratio = price_now / min_90
+
+    if ratio <= 1.05:
+        return "GOOD", ratio
+    elif ratio <= 1.25:
+        return "NORMAL", ratio
+    else:
+        return "HIGH", ratio
