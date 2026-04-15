@@ -1,5 +1,4 @@
 import re
-import asyncio
 import logging
 from typing import Dict
 
@@ -31,6 +30,7 @@ PENDING_THRESHOLD: Dict[int, str] = {}
 
 def kb_home():
     kb = InlineKeyboardBuilder()
+    kb.button(text="🏠 Home", callback_data="home")
     kb.button(text="➕ Aggiungi prodotto", callback_data="add")
     kb.button(text="📋 I miei prodotti", callback_data="list")
     kb.button(text="ℹ️ Aiuto", callback_data="help")
@@ -125,25 +125,25 @@ async def cb_home(c: CallbackQuery):
 
 @router.callback_query(F.data == "add")
 async def cb_add(c: CallbackQuery):
-    await c.message.answer("📎 Incolla il link Amazon")
+    await c.message.answer("📎 Incolla il link Amazon", reply_markup=kb_home())
     await c.answer()
 
 
 @router.callback_query(F.data == "help")
 async def cb_help(c: CallbackQuery):
     await c.message.answer(
-        "ℹ️ Ti dico se conviene comprare o aspettare."
+        "ℹ️ Incolla un link Amazon e ti dico se conviene comprare o aspettare.",
+        reply_markup=kb_home(),
     )
     await c.answer()
 
 
-# ================= LISTA (SOLO TRACCIATI) =================
+# ================= LISTA =================
 
 @router.callback_query(F.data == "list")
 async def cb_list(c: CallbackQuery):
     items = get_watches_for_chat(c.message.chat.id)
 
-    # 🔥 SOLO prodotti con soglia
     tracked = [w for w in items if w.get("threshold")]
 
     if not tracked:
@@ -154,7 +154,6 @@ async def cb_list(c: CallbackQuery):
         return
 
     kb = InlineKeyboardBuilder()
-
     text = "📋 <b>Prodotti tracciati</b>\n\n"
 
     for w in tracked:
@@ -171,7 +170,7 @@ async def cb_list(c: CallbackQuery):
     await c.answer()
 
 
-# ================= GESTIONE PRODOTTO =================
+# ================= GESTIONE =================
 
 @router.callback_query(F.data.startswith("manage:"))
 async def cb_manage(c: CallbackQuery):
@@ -190,7 +189,7 @@ async def cb_watch(c: CallbackQuery):
     asin = c.data.split(":")[1]
     PENDING_THRESHOLD[c.message.chat.id] = asin
 
-    await c.message.answer("Inserisci soglia prezzo:")
+    await c.message.answer("Inserisci soglia prezzo:", reply_markup=kb_home())
     await c.answer()
 
 
@@ -201,7 +200,7 @@ async def cb_setthr(c: CallbackQuery):
 
     set_or_update_watch(c.message.chat.id, asin, thr)
 
-    await c.message.answer(f"🔔 Ti avviso sotto €{thr:.2f}")
+    await c.message.answer(f"🔔 Ti avviso sotto €{thr:.2f}", reply_markup=kb_home())
     await c.answer()
 
 
@@ -219,7 +218,7 @@ async def handle_message(m: Message):
         try:
             value = float(text.replace(",", "."))
         except:
-            await m.answer("Numero non valido")
+            await m.answer("Numero non valido", reply_markup=kb_home())
             return
 
         set_or_update_watch(chat_id, asin, value)
@@ -235,10 +234,12 @@ async def handle_message(m: Message):
         if m_asin:
             asin = m_asin.group(1)
 
-            ensure_watch(chat_id, asin)
+            name = auto_short_name_from_url(url, asin)
+            ensure_watch(chat_id, asin, name)
+
             text, kb = await format_price_card(asin, url)
 
             await m.answer(text, reply_markup=kb, parse_mode="HTML")
             return
 
-    await m.answer("Incolla un link Amazon 🙂")
+    await m.answer("Incolla un link Amazon 🙂", reply_markup=kb_home())
