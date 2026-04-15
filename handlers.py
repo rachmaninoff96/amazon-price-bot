@@ -10,7 +10,6 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from models import (
     get_watches_for_chat,
     set_or_update_watch,
-    find_name_for_asin,
     get_watch,
     WATCHES,
     save_state,
@@ -56,20 +55,6 @@ async def home(c: CallbackQuery):
     await c.message.edit_text("🏠 Incolla un link Amazon", reply_markup=kb_home())
     await c.answer()
 
-@router.callback_query(F.data == "add")
-async def add(c: CallbackQuery):
-    await c.message.answer("📎 Incolla il link Amazon", reply_markup=kb_only_home())
-    await c.answer()
-
-@router.callback_query(F.data == "help")
-async def help_cb(c: CallbackQuery):
-    await c.message.answer(
-        "ℹ️ Ti aiuto a capire quando comprare un prodotto.\n\n"
-        "Incolla un link Amazon e ti do un consiglio.",
-        reply_markup=kb_only_home(),
-    )
-    await c.answer()
-
 # ================= ANALISI =================
 
 async def format_price_card(asin: str, url: str):
@@ -85,7 +70,9 @@ async def format_price_card(asin: str, url: str):
         text = (
             f"🟢 <b>Buon momento per comprare</b>\n\n"
             f"<b>{name}</b>\n\n"
-            f"💶 €{pdata.price_now:.2f}"
+            f"💶 €{pdata.price_now:.2f}\n\n"
+            f"È vicino ai prezzi più bassi recenti.\n"
+            f"Se ti serve, conviene prenderlo ora."
         )
         kb.button(text="🛒 Compra", url=affiliate_link_it(asin))
 
@@ -93,19 +80,23 @@ async def format_price_card(asin: str, url: str):
         text = (
             f"🟡 <b>Prezzo nella norma</b>\n\n"
             f"<b>{name}</b>\n\n"
-            f"💶 €{pdata.price_now:.2f}"
+            f"💶 €{pdata.price_now:.2f}\n\n"
+            f"Non è un affare, ma potrebbe scendere."
         )
         kb.button(text="🔔 Avvisami", callback_data=f"watch:{asin}:{suggested}")
         kb.button(text="🛒 Compra", url=affiliate_link_it(asin))
 
     else:
         text = (
-            f"🔴 <b>Non è un buon momento</b>\n\n"
+            f"🔴 <b>Non è un buon momento per comprare</b>\n\n"
             f"<b>{name}</b>\n\n"
-            f"💶 €{pdata.price_now:.2f}"
+            f"💶 €{pdata.price_now:.2f}\n\n"
+            f"Questo prodotto si trova spesso a meno.\n"
+            f"Ti conviene aspettare.\n\n"
+            f"Posso avvisarti quando torna conveniente."
         )
         kb.button(text="🔔 Avvisami", callback_data=f"watch:{asin}:{suggested}")
-        kb.button(text="🛒 Compra", url=affiliate_link_it(asin))
+        kb.button(text="🛒 Compra comunque", url=affiliate_link_it(asin))
 
     kb.button(text="🏠 Home", callback_data="home")
     kb.adjust(1)
@@ -131,23 +122,13 @@ async def watch(c: CallbackQuery):
     )
     await c.answer()
 
-@router.callback_query(F.data.startswith("manual:"))
-async def manual_input(c: CallbackQuery):
-    _, asin, suggested = c.data.split(":")
-    PENDING_THRESHOLD[c.message.chat.id] = {
-        "asin": asin,
-        "suggested": float(suggested),
-    }
-
-    await c.message.answer("✏️ Inserisci la tua soglia:", reply_markup=kb_only_home())
-    await c.answer()
-
 @router.callback_query(F.data.startswith("setthr:"))
 async def setthr(c: CallbackQuery):
     _, asin, val = c.data.split(":")
     val = float(val)
 
     name = auto_short_name_from_url(f"https://amazon.it/dp/{asin}", asin)
+
     set_or_update_watch(c.message.chat.id, asin, val, name)
 
     await c.message.answer(f"🔔 Ti avviso sotto €{val:.2f}", reply_markup=kb_only_home())
@@ -160,7 +141,7 @@ async def handle_message(m: Message):
     text = (m.text or "").strip()
     chat_id = m.chat.id
 
-    # RENAME FIXATO
+    # RENAME (FIX)
     if chat_id in PENDING_RENAME:
         asin = PENDING_RENAME.pop(chat_id)
 
@@ -172,25 +153,7 @@ async def handle_message(m: Message):
         await m.answer("✏️ Nome aggiornato", reply_markup=kb_only_home())
         return
 
-    # SOGLIA
-    if chat_id in PENDING_THRESHOLD:
-        data = PENDING_THRESHOLD.pop(chat_id)
-
-        try:
-            value = float(text.replace(",", "."))
-        except:
-            await m.answer("Numero non valido", reply_markup=kb_only_home())
-            return
-
-        asin = data["asin"]
-        name = auto_short_name_from_url(f"https://amazon.it/dp/{asin}", asin)
-
-        set_or_update_watch(chat_id, asin, value, name)
-
-        await m.answer(f"🔔 Ti avviso sotto €{value:.2f}", reply_markup=kb_only_home())
-        return
-
-    # LINK
+    # LINK AMAZON
     if "http" in text:
         url = await expand_amazon_url(text)
         m_asin = re.search(r"(?:dp|gp/product)/([A-Z0-9]{10})", url, re.I)
@@ -244,7 +207,6 @@ async def manage(c: CallbackQuery):
 
     kb = InlineKeyboardBuilder()
     kb.button(text="🛒 Compra", url=affiliate_link_it(asin))
-    kb.button(text="🔔 Modifica avviso", callback_data=f"watch:{asin}:{thr}")
     kb.button(text="✏️ Rinomina", callback_data=f"rename:{asin}")
     kb.button(text="🗑️ Rimuovi", callback_data=f"delete:{asin}")
     kb.button(text="🏠 Home", callback_data="home")
