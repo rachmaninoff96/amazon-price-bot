@@ -1,7 +1,7 @@
 import re
 import asyncio
 import logging
-from typing import Dict, List, Tuple
+from typing import Dict
 
 from aiogram import Router, F
 from aiogram.filters import CommandStart
@@ -13,16 +13,12 @@ from models import (
     ensure_watch,
     set_or_update_watch,
     find_name_for_asin,
-    get_watch,
-    WATCHES,
-    save_state,
 )
 from util import (
     get_price_data,
     affiliate_link_it,
     auto_short_name_from_url,
     expand_amazon_url,
-    suggest_thresholds,
     simple_price_decision,
 )
 
@@ -30,14 +26,11 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 PENDING_THRESHOLD: Dict[int, str] = {}
-PENDING_RENAME: Dict[int, str] = {}
 
-
-# ========== UI ==========
+# ================= UI =================
 
 def kb_home():
     kb = InlineKeyboardBuilder()
-    kb.button(text="🏠 Home", callback_data="home")
     kb.button(text="➕ Aggiungi prodotto", callback_data="add")
     kb.button(text="📋 I miei prodotti", callback_data="list")
     kb.button(text="ℹ️ Aiuto", callback_data="help")
@@ -45,44 +38,27 @@ def kb_home():
     return kb.as_markup()
 
 
-def kb_back_home():
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🏠 Home", callback_data="home")
-    kb.adjust(1)
-    return kb.as_markup()
-
-
-# ========== FORMATTER NUOVO (CORE TEST) ==========
+# ================= FORMAT =================
 
 async def format_price_card(asin: str, url: str):
     pdata = await get_price_data(asin)
     name = find_name_for_asin(asin) or auto_short_name_from_url(url, asin)
 
-    decision, ratio = simple_price_decision(pdata.price_now, pdata.lowest_90)
-
-    # fallback sicurezza
-    if decision == "UNKNOWN":
-        text = (
-            f"🛒 <b>{name}</b>\n\n"
-            f"💶 Prezzo attuale: <b>€{pdata.price_now:.2f}</b>\n"
-            f"📉 Minimo 90gg: <b>€{pdata.lowest_90:.2f}</b>\n\n"
-            f"⚠️ Dati insufficienti."
-        )
-        return text, kb_home()
+    decision, _ = simple_price_decision(pdata.price_now, pdata.lowest_90)
 
     # 🟢 OTTIMO
     if decision == "GOOD":
         text = (
             f"🟢 <b>Ottimo prezzo</b>\n\n"
             f"<b>{name}</b>\n\n"
-            f"💶 Prezzo attuale: <b>€{pdata.price_now:.2f}</b>\n"
-            f"📉 Minimo 90gg: €{pdata.lowest_90:.2f}\n\n"
-            f"È vicino ai livelli più bassi recenti.\n\n"
-            f"Se ti serve, è un buon momento per acquistare."
+            f"💶 €{pdata.price_now:.2f}\n"
+            f"📉 Min: €{pdata.lowest_90:.2f}\n\n"
+            f"È vicino ai livelli più bassi.\n"
+            f"Se ti serve, compra."
         )
 
         kb = InlineKeyboardBuilder()
-        kb.button(text="🛒 Acquista su Amazon", url=affiliate_link_it(asin))
+        kb.button(text="🛒 Acquista", url=affiliate_link_it(asin))
         kb.button(text="🏠 Home", callback_data="home")
         kb.adjust(1)
 
@@ -93,15 +69,14 @@ async def format_price_card(asin: str, url: str):
         text = (
             f"🟡 <b>Prezzo nella norma</b>\n\n"
             f"<b>{name}</b>\n\n"
-            f"💶 Prezzo attuale: <b>€{pdata.price_now:.2f}</b>\n"
-            f"📉 Minimo 90gg: €{pdata.lowest_90:.2f}\n\n"
-            f"Non è un affare, ma nemmeno alto.\n\n"
-            f"Se non hai fretta, potrebbe scendere un po’."
+            f"💶 €{pdata.price_now:.2f}\n"
+            f"📉 Min: €{pdata.lowest_90:.2f}\n\n"
+            f"Può scendere."
         )
 
         kb = InlineKeyboardBuilder()
-        kb.button(text="🔔 Avvisami quando scende", callback_data=f"watch:{asin}")
-        kb.button(text="🛒 Acquista comunque", url=affiliate_link_it(asin))
+        kb.button(text="🔔 Avvisami", callback_data=f"watch:{asin}")
+        kb.button(text="🛒 Compra", url=affiliate_link_it(asin))
         kb.button(text="🏠 Home", callback_data="home")
         kb.adjust(1)
 
@@ -114,28 +89,27 @@ async def format_price_card(asin: str, url: str):
         text = (
             f"🔴 <b>Prezzo alto</b>\n\n"
             f"<b>{name}</b>\n\n"
-            f"💶 Prezzo attuale: <b>€{pdata.price_now:.2f}</b>\n"
-            f"📉 Minimo 90gg: €{pdata.lowest_90:.2f}\n\n"
-            f"Questo prodotto si trova spesso a un prezzo più basso.\n\n"
-            f"Ti conviene aspettare.\n\n"
-            f"🎯 <b>Soglia consigliata:</b> €{suggested:.2f}"
+            f"💶 €{pdata.price_now:.2f}\n"
+            f"📉 Min: €{pdata.lowest_90:.2f}\n\n"
+            f"Conviene aspettare.\n\n"
+            f"🎯 Soglia: €{suggested:.2f}"
         )
 
         kb = InlineKeyboardBuilder()
-        kb.button(text="🔔 Avvisami alla soglia consigliata", callback_data=f"setthr:{asin}:{suggested}")
-        kb.button(text="⚙️ Imposta una tua soglia", callback_data=f"watch:{asin}")
+        kb.button(text="🔔 Avvisami", callback_data=f"setthr:{asin}:{suggested}")
+        kb.button(text="⚙️ Soglia manuale", callback_data=f"watch:{asin}")
         kb.button(text="🏠 Home", callback_data="home")
         kb.adjust(1)
 
         return text, kb.as_markup()
 
 
-# ========== HANDLERS ==========
+# ================= HANDLERS =================
 
 @router.message(CommandStart())
 async def start(m: Message):
     await m.answer(
-        "👋 Incolla un link Amazon per analizzare il prezzo.",
+        "👋 Incolla un link Amazon",
         reply_markup=kb_home(),
     )
 
@@ -143,28 +117,73 @@ async def start(m: Message):
 @router.callback_query(F.data == "home")
 async def cb_home(c: CallbackQuery):
     await c.message.edit_text(
-        "🏠 Incolla un link Amazon.",
+        "🏠 Incolla un link Amazon",
         reply_markup=kb_home(),
-        parse_mode="HTML",
     )
     await c.answer()
 
+
+@router.callback_query(F.data == "add")
+async def cb_add(c: CallbackQuery):
+    await c.message.answer("📎 Incolla il link Amazon")
+    await c.answer()
+
+
+@router.callback_query(F.data == "help")
+async def cb_help(c: CallbackQuery):
+    await c.message.answer(
+        "ℹ️ Ti dico se conviene comprare o aspettare."
+    )
+    await c.answer()
+
+
+# ================= LISTA (SOLO TRACCIATI) =================
 
 @router.callback_query(F.data == "list")
 async def cb_list(c: CallbackQuery):
     items = get_watches_for_chat(c.message.chat.id)
 
-    if not items:
-        await c.message.edit_text("📭 Nessun prodotto.", reply_markup=kb_home())
+    # 🔥 SOLO prodotti con soglia
+    tracked = [w for w in items if w.get("threshold")]
+
+    if not tracked:
+        await c.message.edit_text(
+            "📭 Nessun prodotto tracciato.",
+            reply_markup=kb_home(),
+        )
         return
 
-    text = "📋 <b>I tuoi prodotti</b>\n\n"
-    for w in items:
-        text += f"• {w.get('name') or 'Prodotto'}\n"
+    kb = InlineKeyboardBuilder()
 
-    await c.message.edit_text(text, reply_markup=kb_home(), parse_mode="HTML")
+    text = "📋 <b>Prodotti tracciati</b>\n\n"
+
+    for w in tracked:
+        name = w.get("name") or "Prodotto"
+        asin = w["asin"]
+
+        text += f"• {name}\n"
+        kb.button(text=name, callback_data=f"manage:{asin}")
+
+    kb.button(text="🏠 Home", callback_data="home")
+    kb.adjust(1)
+
+    await c.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
     await c.answer()
 
+
+# ================= GESTIONE PRODOTTO =================
+
+@router.callback_query(F.data.startswith("manage:"))
+async def cb_manage(c: CallbackQuery):
+    asin = c.data.split(":")[1]
+
+    text, kb = await format_price_card(asin, f"https://amazon.it/dp/{asin}")
+
+    await c.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await c.answer()
+
+
+# ================= SOGLIA =================
 
 @router.callback_query(F.data.startswith("watch:"))
 async def cb_watch(c: CallbackQuery):
@@ -181,14 +200,34 @@ async def cb_setthr(c: CallbackQuery):
     thr = float(val)
 
     set_or_update_watch(c.message.chat.id, asin, thr)
-    await c.message.answer(f"✅ Soglia impostata a €{thr:.2f}")
+
+    await c.message.answer(f"🔔 Ti avviso sotto €{thr:.2f}")
     await c.answer()
 
+
+# ================= INPUT =================
 
 @router.message()
 async def handle_message(m: Message):
     text = (m.text or "").strip()
+    chat_id = m.chat.id
 
+    # SOGLIA
+    if chat_id in PENDING_THRESHOLD:
+        asin = PENDING_THRESHOLD.pop(chat_id)
+
+        try:
+            value = float(text.replace(",", "."))
+        except:
+            await m.answer("Numero non valido")
+            return
+
+        set_or_update_watch(chat_id, asin, value)
+
+        await m.answer(f"🔔 Ti avviso sotto €{value:.2f}", reply_markup=kb_home())
+        return
+
+    # LINK
     if "http" in text:
         url = await expand_amazon_url(text)
         m_asin = re.search(r"(?:dp|gp/product)/([A-Z0-9]{10})", url, re.I)
@@ -196,7 +235,7 @@ async def handle_message(m: Message):
         if m_asin:
             asin = m_asin.group(1)
 
-            ensure_watch(m.chat.id, asin)
+            ensure_watch(chat_id, asin)
             text, kb = await format_price_card(asin, url)
 
             await m.answer(text, reply_markup=kb, parse_mode="HTML")
