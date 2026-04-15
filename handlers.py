@@ -71,8 +71,7 @@ async def format_price_card(asin: str, url: str):
             f"🟢 <b>Buon momento per comprare</b>\n\n"
             f"<b>{name}</b>\n\n"
             f"💶 €{pdata.price_now:.2f}\n\n"
-            f"È vicino ai prezzi più bassi recenti.\n"
-            f"Se ti serve, conviene prenderlo ora."
+            f"È vicino ai prezzi più bassi recenti."
         )
         kb.button(text="🛒 Compra", url=affiliate_link_it(asin))
 
@@ -81,7 +80,7 @@ async def format_price_card(asin: str, url: str):
             f"🟡 <b>Prezzo nella norma</b>\n\n"
             f"<b>{name}</b>\n\n"
             f"💶 €{pdata.price_now:.2f}\n\n"
-            f"Non è un affare, ma potrebbe scendere."
+            f"Potrebbe scendere."
         )
         kb.button(text="🔔 Avvisami", callback_data=f"watch:{asin}:{suggested}")
         kb.button(text="🛒 Compra", url=affiliate_link_it(asin))
@@ -92,8 +91,7 @@ async def format_price_card(asin: str, url: str):
             f"<b>{name}</b>\n\n"
             f"💶 €{pdata.price_now:.2f}\n\n"
             f"Questo prodotto si trova spesso a meno.\n"
-            f"Ti conviene aspettare.\n\n"
-            f"Posso avvisarti quando torna conveniente."
+            f"Ti conviene aspettare."
         )
         kb.button(text="🔔 Avvisami", callback_data=f"watch:{asin}:{suggested}")
         kb.button(text="🛒 Compra comunque", url=affiliate_link_it(asin))
@@ -105,29 +103,17 @@ async def format_price_card(asin: str, url: str):
 
 # ================= WATCH =================
 
-@router.callback_query(F.data.startswith("watch:"))
-async def watch(c: CallbackQuery):
-    _, asin, suggested = c.data.split(":")
-    suggested = float(suggested)
-
-    kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Usa soglia consigliata", callback_data=f"setthr:{asin}:{suggested}")
-    kb.button(text="✏️ Inserisci soglia", callback_data=f"manual:{asin}:{suggested}")
-    kb.button(text="🏠 Home", callback_data="home")
-    kb.adjust(1)
-
-    await c.message.answer(
-        f"🔔 Ti avviso quando torna conveniente (circa €{suggested:.2f})",
-        reply_markup=kb.as_markup()
-    )
-    await c.answer()
-
 @router.callback_query(F.data.startswith("setthr:"))
 async def setthr(c: CallbackQuery):
     _, asin, val = c.data.split(":")
     val = float(val)
 
-    name = auto_short_name_from_url(f"https://amazon.it/dp/{asin}", asin)
+    watch = get_watch(c.message.chat.id, asin)
+
+    if watch and watch.get("name"):
+        name = watch["name"]
+    else:
+        name = auto_short_name_from_url(f"https://amazon.it/dp/{asin}", asin)
 
     set_or_update_watch(c.message.chat.id, asin, val, name)
 
@@ -141,7 +127,7 @@ async def handle_message(m: Message):
     text = (m.text or "").strip()
     chat_id = m.chat.id
 
-    # RENAME (FIX)
+    # RENAME
     if chat_id in PENDING_RENAME:
         asin = PENDING_RENAME.pop(chat_id)
 
@@ -160,6 +146,15 @@ async def handle_message(m: Message):
 
         if m_asin:
             asin = m_asin.group(1)
+
+            # IMPORTANTISSIMO 👇
+            watch = get_watch(chat_id, asin)
+
+            if watch and watch.get("name"):
+                name = watch["name"]
+            else:
+                name = auto_short_name_from_url(url, asin)
+
             text, kb = await format_price_card(asin, url)
             await m.answer(text, reply_markup=kb, parse_mode="HTML")
             return
@@ -199,21 +194,20 @@ async def list_cb(c: CallbackQuery):
 @router.callback_query(F.data.startswith("manage:"))
 async def manage(c: CallbackQuery):
     asin = c.data.split(":")[1]
-    pdata = await get_price_data(asin)
 
     watch = get_watch(c.message.chat.id, asin)
+
     name = watch.get("name") if watch else "Prodotto"
     thr = watch.get("threshold") if watch else 0
 
     kb = InlineKeyboardBuilder()
-    kb.button(text="🛒 Compra", url=affiliate_link_it(asin))
     kb.button(text="✏️ Rinomina", callback_data=f"rename:{asin}")
     kb.button(text="🗑️ Rimuovi", callback_data=f"delete:{asin}")
     kb.button(text="🏠 Home", callback_data="home")
     kb.adjust(1)
 
     await c.message.edit_text(
-        f"<b>{name}</b>\n\n💶 €{pdata.price_now:.2f}\n🎯 Avviso a €{thr:.2f}",
+        f"<b>{name}</b>\n\n🎯 Avviso a €{thr:.2f}",
         reply_markup=kb.as_markup(),
         parse_mode="HTML"
     )
