@@ -72,19 +72,19 @@ async def format_price_card(asin: str, url: str):
     pdata = await get_price_data(asin)
     name = auto_short_name_from_url(url, asin)
 
-    decision, ratio = simple_price_decision(pdata.price_now, pdata.lowest_90)
+    decision, _ = simple_price_decision(pdata.price_now, pdata.lowest_90)
     suggested = round(pdata.lowest_90 * 1.10, 2)
 
     kb = InlineKeyboardBuilder()
 
     if decision == "GOOD":
         text = (
-            f"🟢 <b>Buon momento per comprare</b>\n\n"
+            f"🟢 <b>Ottimo momento per acquistare</b>\n\n"
             f"<b>{name}</b>\n\n"
             f"💶 €{pdata.price_now:.2f}\n\n"
-            f"È vicino al minimo recente."
+            f"È vicino ai prezzi più bassi recenti."
         )
-        kb.button(text="🛒 Compra", url=affiliate_link_it(asin))
+        kb.button(text="🛒 Compra ora", url=affiliate_link_it(asin))
 
     elif decision == "NORMAL":
         text = (
@@ -92,9 +92,9 @@ async def format_price_card(asin: str, url: str):
             f"<b>{name}</b>\n\n"
             f"💶 €{pdata.price_now:.2f}\n\n"
             f"Non è un affare.\n"
-            f"Potrebbe scendere un po'."
+            f"Se non hai fretta, potrebbe scendere."
         )
-        kb.button(text="🔔 Avvisami", callback_data=f"watch:{asin}:{suggested}")
+        kb.button(text="🔔 Avvisami quando scende", callback_data=f"watch:{asin}:{suggested}")
 
     else:
         text = (
@@ -104,7 +104,7 @@ async def format_price_card(asin: str, url: str):
             f"Negli ultimi mesi si è trovato a circa €{pdata.lowest_90:.2f}.\n"
             f"Conviene aspettare."
         )
-        kb.button(text="🔔 Avvisami", callback_data=f"watch:{asin}:{suggested}")
+        kb.button(text="🔔 Avvisami quando scende vicino al minimo", callback_data=f"watch:{asin}:{suggested}")
 
     kb.button(text="🏠 Home", callback_data="home")
     kb.adjust(1)
@@ -120,11 +120,15 @@ async def watch(c: CallbackQuery):
 
     kb = InlineKeyboardBuilder()
     kb.button(text="✅ Usa soglia consigliata", callback_data=f"setthr:{asin}:{suggested}")
-    kb.button(text="✏️ Inserisci soglia", callback_data=f"manual:{asin}")
+    kb.button(text="✏️ Inserisci una tua soglia", callback_data=f"manual:{asin}")
     kb.button(text="🏠 Home", callback_data="home")
     kb.adjust(1)
 
-    await c.message.answer(f"🔔 Ti avviso sotto circa €{suggested:.2f}", reply_markup=kb.as_markup())
+    await c.message.answer(
+        f"🔔 Ti avviso quando scende vicino ai prezzi minimi (~€{suggested:.2f})\n\n"
+        f"💡 Ti consiglio di usare questa soglia per non perdere l’occasione.",
+        reply_markup=kb.as_markup()
+    )
     await c.answer()
 
 @router.callback_query(F.data.startswith("setthr:"))
@@ -145,17 +149,17 @@ async def manual(c: CallbackQuery):
     _, asin = c.data.split(":")
     PENDING_THRESHOLD[c.message.chat.id] = asin
 
-    await c.message.answer("✏️ Inserisci soglia:", reply_markup=kb_only_home())
+    await c.message.answer("✏️ Inserisci la tua soglia prezzo:", reply_markup=kb_only_home())
     await c.answer()
 
-# ================= MESSAGE HANDLER (UNICO) =================
+# ================= MESSAGE HANDLER =================
 
 @router.message()
 async def handle_message(m: Message):
     text = (m.text or "").strip()
     chat_id = m.chat.id
 
-    # 🔥 RENAME FIX
+    # RENAME
     if chat_id in PENDING_RENAME:
         asin = PENDING_RENAME.pop(chat_id)
 
@@ -185,7 +189,7 @@ async def handle_message(m: Message):
         await m.answer(f"🔔 Ti avviso sotto €{value:.2f}", reply_markup=kb_only_home())
         return
 
-    # LINK
+    # LINK AMAZON
     if "http" in text:
         url = await expand_amazon_url(text)
         m_asin = re.search(r"(?:dp|gp/product)/([A-Z0-9]{10})", url, re.I)
@@ -255,7 +259,7 @@ async def delete(c: CallbackQuery):
     WATCHES[chat_id] = [w for w in WATCHES.get(chat_id, []) if w["asin"] != asin]
     save_state()
 
-    await c.message.answer("🗑️ Rimosso", reply_markup=kb_only_home())
+    await c.message.answer("🗑️ Prodotto rimosso", reply_markup=kb_only_home())
     await c.answer()
 
 # ================= RENAME =================
@@ -265,5 +269,5 @@ async def rename(c: CallbackQuery):
     asin = c.data.split(":")[1]
     PENDING_RENAME[c.message.chat.id] = asin
 
-    await c.message.answer("✏️ Nuovo nome:", reply_markup=kb_only_home())
+    await c.message.answer("✏️ Inserisci il nuovo nome:", reply_markup=kb_only_home())
     await c.answer()
