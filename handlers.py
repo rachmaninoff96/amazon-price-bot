@@ -290,34 +290,32 @@ async def handle_message(m: Message):
             name = title or f"Prodotto {asin}"
 
         pdata = await get_price_data(asin)
-recommended = round(pdata.lowest_90 * 1.10, 2)
 
-# 👉 soglia troppo bassa → warning
-if value < pdata.lowest_90 * 0.7:
-    kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Usa comunque questa soglia", callback_data=f"force:{asin}:{value}")
-    kb.button(text="↩️ Torna indietro", callback_data=f"watch:{asin}")
-    kb.button(text="🏠 Home", callback_data="home")
-    kb.adjust(1)
+        # controllo soglia assurda
+        if value < pdata.lowest_90 * 0.7:
+            kb = InlineKeyboardBuilder()
+            kb.button(text="✅ Usa comunque", callback_data=f"force:{asin}:{value}")
+            kb.button(text="↩️ Torna indietro", callback_data=f"watch:{asin}")
+            kb.button(text="🏠 Home", callback_data="home")
+            kb.adjust(1)
 
-    await m.answer(
-        f"⚠️ Questa soglia è molto difficile da raggiungere.\n\n"
-        f"Negli ultimi mesi il prezzo più basso è stato circa €{pdata.lowest_90:.2f}.\n\n"
-        f"Vuoi comunque usarla?",
-        reply_markup=kb.as_markup()
-    )
-    return
+            await m.answer(
+                f"⚠️ Questa soglia è molto difficile da raggiungere.\n\n"
+                f"Minimo recente: €{pdata.lowest_90:.2f}\n\n"
+                f"Vuoi comunque usarla?",
+                reply_markup=kb.as_markup()
+            )
+            return
 
-# 👉 soglia ok → salva subito
-set_or_update_watch(chat_id, asin, value, name)
+        set_or_update_watch(chat_id, asin, value, name)
 
-await m.answer(
-    f"🔔 Ti avviso sotto €{value:.2f}",
-    reply_markup=kb_home()
-)
-return
+        await m.answer(
+            f"🔔 Ti avviso sotto €{value:.2f}",
+            reply_markup=kb_home()
+        )
+        return
 
-    # link
+    # link (DEVE stare qui, NON indentato sotto altro)
     if "http" in text:
         url = await expand_amazon_url(text)
         m_asin = re.search(r"(?:dp|gp/product)/([A-Z0-9]{10})", url, re.I)
@@ -334,4 +332,5 @@ return
             )
             return
 
+    # fallback
     await m.answer("Incolla un link Amazon 🙂", reply_markup=kb_home())
