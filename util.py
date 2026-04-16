@@ -53,9 +53,14 @@ async def get_keepa_data(asin: str) -> Optional[KeepaStats90]:
         "stats": 90,
     }
 
-    def extract_price(x):
-        if isinstance(x, list) and len(x) > 1:
-            return x[1]
+    def safe_extract(x):
+        # prende QUALSIASI formato e prova a tirare fuori un numero
+        if isinstance(x, (int, float)):
+            return x
+        if isinstance(x, list):
+            for el in reversed(x):
+                if isinstance(el, (int, float)) and el > 0:
+                    return el
         return None
 
     try:
@@ -67,18 +72,17 @@ async def get_keepa_data(asin: str) -> Optional[KeepaStats90]:
         if not products:
             return None
 
-        p = products[0]
-        stats = p.get("stats")
-
+        stats = products[0].get("stats")
         if not stats:
             return None
 
-        current = extract_price(stats.get("current"))
-        min90 = extract_price(stats.get("min"))
-        max90 = extract_price(stats.get("max"))
-        avg90 = extract_price(stats.get("avg"))
+        current = safe_extract(stats.get("current"))
+        min90 = safe_extract(stats.get("min"))
+        max90 = safe_extract(stats.get("max"))
+        avg90 = safe_extract(stats.get("avg"))
 
-        if not all([current, min90, avg90]):
+        # se manca qualcosa → fallback
+        if not current or not min90 or not avg90:
             return None
 
         return KeepaStats90(
