@@ -136,3 +136,33 @@ def simple_price_decision(price_now: float, min_90: float):
         return "NORMAL", ratio
     else:
         return "HIGH", ratio
+
+# ================= FALLBACK NAME =================
+
+def auto_short_name_from_url(url: str, asin: str) -> str:
+    try:
+        m = re.search(r"/dp/[^/]+/([^/?#]+)", url, flags=re.IGNORECASE)
+        if m:
+            name = m.group(1)
+            name = re.sub(r"[-_/]+", " ", name)
+            name = re.sub(r"\s+", " ", name).strip()
+            return name.title()[:60]
+
+    except Exception:
+        pass
+
+    return f"Prodotto {asin}"
+
+
+# ================= SUGGEST THRESHOLDS =================
+
+def suggest_thresholds(asin: str):
+    pdata = mock_prices_from_asin(asin)
+    price_now = pdata.price_now
+    lowest_90 = pdata.lowest_90
+
+    s1 = round(price_now * 0.95, 2)
+    s2 = round(price_now * 0.90, 2)
+    s3 = round(lowest_90 * 1.02, 2)
+
+    return [s1, s2, s3]
