@@ -46,14 +46,27 @@ class KeepaStats90:
 
 async def get_amazon_title(url: str) -> str:
     try:
-        async with aiohttp.ClientSession() as session:
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept-Language": "it-IT,it;q=0.9"
+        }
+
+        async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url, timeout=10) as resp:
                 html = await resp.text()
 
+                # 1️⃣ metodo principale
                 m = re.search(r'<span id="productTitle">(.*?)</span>', html, re.S)
                 if m:
                     title = m.group(1)
                     title = re.sub(r"\s+", " ", title).strip()
+                    return title[:80]
+
+                # 2️⃣ fallback titolo pagina
+                m2 = re.search(r'<title>(.*?)</title>', html, re.S)
+                if m2:
+                    title = m2.group(1)
+                    title = title.replace("Amazon.it", "").strip()
                     return title[:80]
 
     except Exception as e:
