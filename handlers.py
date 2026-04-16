@@ -270,32 +270,32 @@ async def handle_message(m: Message):
         await m.answer("✅ Nome aggiornato", reply_markup=kb_home())
         return
 
-# soglia manuale
-if chat_id in PENDING_THRESHOLD:
-    asin = PENDING_THRESHOLD.pop(chat_id)
+    # soglia manuale
+    if chat_id in PENDING_THRESHOLD:
+        asin = PENDING_THRESHOLD.pop(chat_id)
 
-    try:
-        value = float(text.replace(",", "."))
-    except ValueError:
-        await m.answer("⚠️ Inserisci un numero valido")
+        try:
+            value = float(text.replace(",", "."))
+        except ValueError:
+            await m.answer("⚠️ Inserisci un numero valido")
+            return
+
+        url = f"https://amazon.it/dp/{asin}"
+        title = await get_amazon_title(url)
+
+        watch = get_watch(chat_id, asin)
+        name = watch.get("name") if watch else None
+
+        if not name:
+            name = title or f"Prodotto {asin}"
+
+        set_or_update_watch(chat_id, asin, value, name)
+
+        await m.answer(
+            f"🔔 Ti avviso sotto €{value:.2f}",
+            reply_markup=kb_home()
+        )
         return
-
-    url = f"https://amazon.it/dp/{asin}"
-    title = await get_amazon_title(url)
-
-    watch = get_watch(chat_id, asin)
-    name = watch.get("name") if watch else None
-
-    if not name:
-        name = title or f"Prodotto {asin}"
-
-    set_or_update_watch(chat_id, asin, value, name)
-
-    await m.answer(
-        f"🔔 Ti avviso sotto €{value:.2f}",
-        reply_markup=kb_home()
-    )
-    return
 
     # link
     if "http" in text:
