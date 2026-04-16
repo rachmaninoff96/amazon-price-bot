@@ -63,7 +63,7 @@ async def add(c: CallbackQuery):
 
 @router.callback_query(F.data == "help")
 async def help_cb(c: CallbackQuery):
-    await c.message.answer("ℹ️ Incolla un link Amazon", reply_markup=kb_only_home())
+    await c.message.answer("ℹ️ Ti aiuto a capire quando comprare.", reply_markup=kb_only_home())
     await c.answer()
 
 # ================= ANALISI =================
@@ -72,19 +72,39 @@ async def format_price_card(asin: str, url: str):
     pdata = await get_price_data(asin)
     name = auto_short_name_from_url(url, asin)
 
-    decision, _ = simple_price_decision(pdata.price_now, pdata.lowest_90)
+    decision, ratio = simple_price_decision(pdata.price_now, pdata.lowest_90)
     suggested = round(pdata.lowest_90 * 1.10, 2)
 
     kb = InlineKeyboardBuilder()
 
     if decision == "GOOD":
-        text = f"🟢 <b>Buon momento</b>\n\n<b>{name}</b>\n💶 €{pdata.price_now:.2f}"
+        text = (
+            f"🟢 <b>Buon momento per comprare</b>\n\n"
+            f"<b>{name}</b>\n\n"
+            f"💶 €{pdata.price_now:.2f}\n\n"
+            f"È vicino al minimo recente."
+        )
         kb.button(text="🛒 Compra", url=affiliate_link_it(asin))
 
-    else:
-        text = f"🔴 <b>Meglio aspettare</b>\n\n<b>{name}</b>\n💶 €{pdata.price_now:.2f}"
+    elif decision == "NORMAL":
+        text = (
+            f"🟡 <b>Prezzo nella norma</b>\n\n"
+            f"<b>{name}</b>\n\n"
+            f"💶 €{pdata.price_now:.2f}\n\n"
+            f"Non è un affare.\n"
+            f"Potrebbe scendere un po'."
+        )
         kb.button(text="🔔 Avvisami", callback_data=f"watch:{asin}:{suggested}")
-        kb.button(text="🛒 Compra", url=affiliate_link_it(asin))
+
+    else:
+        text = (
+            f"🔴 <b>Prezzo alto</b>\n\n"
+            f"<b>{name}</b>\n\n"
+            f"💶 €{pdata.price_now:.2f}\n\n"
+            f"Negli ultimi mesi si è trovato a circa €{pdata.lowest_90:.2f}.\n"
+            f"Conviene aspettare."
+        )
+        kb.button(text="🔔 Avvisami", callback_data=f"watch:{asin}:{suggested}")
 
     kb.button(text="🏠 Home", callback_data="home")
     kb.adjust(1)
@@ -104,7 +124,7 @@ async def watch(c: CallbackQuery):
     kb.button(text="🏠 Home", callback_data="home")
     kb.adjust(1)
 
-    await c.message.answer(f"🔔 Ti avviso sotto €{suggested:.2f}", reply_markup=kb.as_markup())
+    await c.message.answer(f"🔔 Ti avviso sotto circa €{suggested:.2f}", reply_markup=kb.as_markup())
     await c.answer()
 
 @router.callback_query(F.data.startswith("setthr:"))
@@ -114,7 +134,6 @@ async def setthr(c: CallbackQuery):
 
     name = auto_short_name_from_url(f"https://amazon.it/dp/{asin}", asin)
 
-    # 👇 FIX CRITICO
     ensure_watch(c.message.chat.id, asin, name)
     set_or_update_watch(c.message.chat.id, asin, val, name)
 
@@ -129,14 +148,26 @@ async def manual(c: CallbackQuery):
     await c.message.answer("✏️ Inserisci soglia:", reply_markup=kb_only_home())
     await c.answer()
 
-# ================= INPUT =================
+# ================= MESSAGE HANDLER (UNICO) =================
 
 @router.message()
 async def handle_message(m: Message):
     text = (m.text or "").strip()
     chat_id = m.chat.id
 
-    # soglia manuale
+    # 🔥 RENAME FIX
+    if chat_id in PENDING_RENAME:
+        asin = PENDING_RENAME.pop(chat_id)
+
+        watch = get_watch(chat_id, asin)
+        thr = watch.get("threshold") if watch else None
+
+        set_or_update_watch(chat_id, asin, thr, text)
+
+        await m.answer("✅ Nome aggiornato", reply_markup=kb_only_home())
+        return
+
+    # SOGLIA
     if chat_id in PENDING_THRESHOLD:
         asin = PENDING_THRESHOLD.pop(chat_id)
 
@@ -148,14 +179,13 @@ async def handle_message(m: Message):
 
         name = auto_short_name_from_url(f"https://amazon.it/dp/{asin}", asin)
 
-        # 👇 FIX CRITICO
         ensure_watch(chat_id, asin, name)
         set_or_update_watch(chat_id, asin, value, name)
 
         await m.answer(f"🔔 Ti avviso sotto €{value:.2f}", reply_markup=kb_only_home())
         return
 
-    # link
+    # LINK
     if "http" in text:
         url = await expand_amazon_url(text)
         m_asin = re.search(r"(?:dp|gp/product)/([A-Z0-9]{10})", url, re.I)
@@ -237,17 +267,3 @@ async def rename(c: CallbackQuery):
 
     await c.message.answer("✏️ Nuovo nome:", reply_markup=kb_only_home())
     await c.answer()
-
-@router.message()
-async def rename_handler(m: Message):
-    chat_id = m.chat.id
-
-    if chat_id in PENDING_RENAME:
-        asin = PENDING_RENAME.pop(chat_id)
-
-        watch = get_watch(chat_id, asin)
-        thr = watch.get("threshold") if watch else None
-
-        set_or_update_watch(chat_id, asin, thr, m.text)
-
-        await m.answer("✅ Nome aggiornato", reply_markup=kb_only_home())
