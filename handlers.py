@@ -272,7 +272,7 @@ async def handle_message(m: Message):
 
     # soglia manuale
     if chat_id in PENDING_THRESHOLD:
-        asin = PENDING_THRESHOLD.pop(chat_id)
+        asin = PENDING_THRESHOLD[chat_id]
 
         try:
             value = float(text.replace(",", "."))
@@ -282,11 +282,25 @@ async def handle_message(m: Message):
 
         pdata = await get_price_data(asin)
 
-        # 🔥 controllo intelligente soglia (90%)
+        # controllo intelligente soglia (90%)
         if value < pdata.lowest_90 * 0.9:
+            kb = InlineKeyboardBuilder()
+            kb.button(
+                text="✅ Usa soglia consigliata",
+                callback_data=f"setauto:{asin}:{round(pdata.lowest_90 * 1.1, 2)}"
+            )
+            kb.button(
+                text="✏️ Inserisci nuova soglia",
+                callback_data=f"setmanual:{asin}"
+            )
+            kb.button(text="🏠 Home", callback_data="home")
+            kb.adjust(1)
+
             await m.answer(
                 "⚠️ Questa soglia è molto difficile da raggiungere.\n"
-                "Negli ultimi mesi non è mai sceso così tanto."
+                "Negli ultimi mesi non è mai sceso così tanto.\n\n"
+                "Vuoi usare la soglia consigliata oppure inserirne un’altra?",
+                reply_markup=kb.as_markup()
             )
             return
 
@@ -301,13 +315,16 @@ async def handle_message(m: Message):
 
         set_or_update_watch(chat_id, asin, value, name)
 
+        # svuota stato SOLO quando la soglia è valida
+        PENDING_THRESHOLD.pop(chat_id, None)
+
         await m.answer(
             f"🔔 Ti avviso sotto €{value:.2f}",
             reply_markup=kb_home()
         )
         return
 
-    # 👇 intercetta numeri senza bottone (UX fix)
+    # intercetta numeri senza bottone (UX fix)
     if re.match(r"^\d+[.,]?\d*$", text):
         await m.answer(
             "⚠️ Per inserire una soglia devi prima cliccare su\n"
@@ -317,7 +334,7 @@ async def handle_message(m: Message):
         )
         return
 
-    # link
+    # link amazon
     if "http" in text:
         url = await expand_amazon_url(text)
         m_asin = re.search(r"(?:dp|gp/product)/([A-Z0-9]{10})", url, re.I)
