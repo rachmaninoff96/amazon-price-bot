@@ -62,25 +62,78 @@ def kb_product_actions(asin: str):
 
 # ================= FORMATTER =================
 
+def smart_price_decision(price_now: float, lowest_90: float, avg_90: float):
+    if not price_now or not lowest_90:
+        return "NORMAL", ""
+
+    ratio = price_now / lowest_90
+    spread = (avg_90 - lowest_90) / lowest_90 if lowest_90 > 0 else 0
+
+    if ratio <= 1.15:
+        if spread < 0.10:
+            return "BUY", "stabile"
+        else:
+            return "BUY", "volatile"
+
+    elif ratio <= 1.35:
+        if spread > 0.25:
+            return "NORMAL", "volatile"
+        else:
+            return "NORMAL", "stabile"
+
+    else:
+        return "HIGH", ""
+
 async def format_price_card(asin: str, url: str) -> str:
     pdata = await get_price_data(asin)
 
-    # decision logic
-    state, _ = simple_price_decision(pdata.price_now, pdata.lowest_90)
+    # nuova logica
+    state, mode = smart_price_decision(
+        pdata.price_now,
+        pdata.lowest_90,
+        pdata.avg_90
+    )
 
-    if state == "GOOD":
-        header = "🟢 Ottimo prezzo"
-        desc = "È vicino ai minimi recenti.\nSe ti serve, è un buon momento per acquistare."
-    elif state == "NORMAL":
-        header = "🟡 Prezzo nella norma"
-        desc = "Non è un affare, ma nemmeno alto.\nSe puoi aspettare, potrebbe scendere."
-    else:
-        header = "🔴 Prezzo alto"
-        desc = f"Negli ultimi mesi si è trovato a circa €{pdata.lowest_90:.2f}.\nConviene aspettare."
-
-    # nome prodotto (NON TOCCARE PIÙ QUESTA LOGICA)
+    # nome prodotto (NON TOCCARE)
     title = await get_amazon_title(url)
     name = title or find_name_for_asin(asin) or auto_short_name_from_url(url, asin)
+
+    # ===== MESSAGGI =====
+
+    if state == "BUY":
+        if mode == "stabile":
+            header = "🟢 Ottimo prezzo"
+            desc = (
+                "È vicino ai minimi e il prezzo è abbastanza stabile.\n"
+                "👉 Se ti serve, conviene comprarlo ora."
+            )
+        else:
+            header = "🟢 Buon prezzo"
+            desc = (
+                "È vicino ai minimi recenti, ma questo prodotto oscilla nel tempo.\n"
+                "👉 Potrebbe scendere ancora, ma è comunque un buon prezzo."
+            )
+
+    elif state == "NORMAL":
+        if mode == "volatile":
+            header = "🟡 Prezzo nella norma"
+            desc = (
+                "Questo prodotto varia spesso di prezzo.\n"
+                "👉 Se non hai fretta, può valere la pena aspettare."
+            )
+        else:
+            header = "🟡 Prezzo nella norma"
+            desc = (
+                "Non è un affare, ma nemmeno alto.\n"
+                "👉 Se puoi aspettare, potrebbe scendere."
+            )
+
+    else:
+        header = "🔴 Prezzo alto"
+        desc = (
+            f"Negli ultimi mesi è sceso fino a €{pdata.lowest_90:.2f}.\n"
+            "👉 Conviene aspettare."
+        )
 
     txt = (
         f"{header}\n\n"
