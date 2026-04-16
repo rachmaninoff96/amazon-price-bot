@@ -45,14 +45,15 @@ class KeepaStats90:
 # ================= KEEPA =================
 
 async def get_price_data(asin: str) -> PriceData:
-    # cache
     now = time.time()
+
+    # cache
     if asin in _PRICE_CACHE:
         ts, data = _PRICE_CACHE[asin]
         if now - ts < PRICE_CACHE_TTL_SECONDS:
             return data
 
-    # 👉 USA KEEPA SE ATTIVO
+    # usa Keepa
     if USE_KEEPA and KEEPA_API_KEY:
         try:
             logger.warning("USE_KEEPA=True | TRYING KEEPA...")
@@ -65,42 +66,35 @@ async def get_price_data(asin: str) -> PriceData:
 
             products = data.get("products", [])
             if not products:
-                logger.warning("KEEPA RESULT: no products")
                 raise Exception("No product")
 
             product = products[0]
             stats = product.get("stats", {})
 
-            # 🔥 funzione per prendere il prezzo AMAZON (indice 0)
-            def pick_amazon(x):
-                if isinstance(x, list) and len(x) > 0:
-                    val = x[0]
-                    if isinstance(val, (int, float)) and val > 0:
-                        return val
+            # 🔥 prende il primo prezzo valido (Amazon o marketplace)
+            def pick_price(x):
+                if isinstance(x, list):
+                    for val in x:
+                        if isinstance(val, (int, float)) and val > 0:
+                            return val
                 return None
 
-            current = pick_amazon(stats.get("current"))
-            min90 = pick_amazon(stats.get("min"))
-            max90 = pick_amazon(stats.get("max"))
-            avg90 = pick_amazon(stats.get("avg"))
+            current = pick_price(stats.get("current"))
+            min90 = pick_price(stats.get("min"))
+            max90 = pick_price(stats.get("max"))
+            avg90 = pick_price(stats.get("avg"))
 
             if not current or not min90:
-                logger.warning("KEEPA RESULT: dati insufficienti")
                 raise Exception("Invalid stats")
 
-            price_now = current / 100
-            lowest_90 = min90 / 100
-            avg_90 = avg90 / 100 if avg90 else price_now
-            max_90 = max90 / 100 if max90 else price_now
-
             result = PriceData(
-                price_now=price_now,
-                lowest_90=lowest_90,
-                avg_90=avg_90,
-                max_90=max_90,
-                forecast_7d=price_now,
-                lo_7d=lowest_90,
-                hi_7d=max_90,
+                price_now=current / 100,
+                lowest_90=min90 / 100,
+                avg_90=(avg90 / 100) if avg90 else current / 100,
+                max_90=(max90 / 100) if max90 else current / 100,
+                forecast_7d=current / 100,
+                lo_7d=min90 / 100,
+                hi_7d=max90 / 100,
                 likely_days=3,
                 state="REAL",
                 advice="",
@@ -108,16 +102,16 @@ async def get_price_data(asin: str) -> PriceData:
 
             _PRICE_CACHE[asin] = (now, result)
 
-            logger.warning(f"KEEPA OK: {price_now}€")
+            logger.warning(f"KEEPA OK: {result.price_now}€")
             return result
 
         except Exception as e:
             logger.warning(f"KEEPA ERROR: {e}")
-            logger.warning("USING MOCK DATA")
 
-    # 👉 fallback mock
+    # fallback mock
     result = mock_prices_from_asin(asin)
     _PRICE_CACHE[asin] = (now, result)
+    logger.warning("USING MOCK DATA")
     return result
 
 # ================= TITLE AMAZON =================
