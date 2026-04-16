@@ -97,7 +97,7 @@ async def _render_products_list(items: List[dict]) -> Tuple[str, object]:
     lines = []
 
     for w in items:
-        name = w.get("name") or "Prodotto"
+        name = w.get("name") or f"Prodotto {w.get('asin')}"
         thr = w.get("threshold")
 
         thr_txt = f"€{thr:.2f}" if isinstance(thr, (int, float)) else "—"
@@ -175,19 +175,26 @@ async def cb_manage(c: CallbackQuery):
 @router.callback_query(F.data.startswith("watch:"))
 async def cb_watch(c: CallbackQuery):
     asin = c.data.split(":")[1]
-    chat_id = c.message.chat.id
 
     pdata = await get_price_data(asin)
     thr = round(pdata.lowest_90 * 1.10, 2)
 
-    # NON sovrascrivere nome!
-    ensure_watch(chat_id, asin)
-    set_or_update_watch(chat_id, asin, thr)
+    # 👉 NON salviamo ancora nulla
+    # 👉 mostriamo scelta
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Usa soglia consigliata", callback_data=f"setauto:{asin}:{thr}")
+    kb.button(text="✏️ Inserisci soglia manuale", callback_data=f"setmanual:{asin}")
+    kb.button(text="🏠 Home", callback_data="home")
+    kb.adjust(1)
 
     await c.message.answer(
-        f"🔔 Ti avviso quando scende sotto circa €{thr:.2f}",
-        reply_markup=kb_home()
+        f"🔔 Ti avviso quando il prezzo torna conveniente\n"
+        f"(circa €{thr:.2f})\n\n"
+        f"Puoi usare questa soglia oppure inserirne una tua.",
+        reply_markup=kb.as_markup()
     )
+
     await c.answer()
 
 @router.callback_query(F.data.startswith("delete:"))
@@ -199,6 +206,30 @@ async def cb_delete(c: CallbackQuery):
     save_state()
 
     await c.message.answer("🗑️ Eliminato", reply_markup=kb_home())
+    await c.answer()
+
+@router.callback_query(F.data.startswith("setauto:"))
+async def cb_setauto(c: CallbackQuery):
+    _, asin, val = c.data.split(":")
+    thr = float(val)
+    chat_id = c.message.chat.id
+
+    url = f"https://amazon.it/dp/{asin}"
+    title = await get_amazon_title(url)
+
+    watch = get_watch(chat_id, asin)
+    name = watch.get("name") if watch else None
+
+    if not name:
+        name = title or f"Prodotto {asin}"
+
+    set_or_update_watch(chat_id, asin, thr, name)
+
+    await c.message.answer(
+        f"🔔 Ti avviso sotto €{thr:.2f}",
+        reply_markup=kb_home()
+    )
+
     await c.answer()
 
 @router.callback_query(F.data.startswith("rename:"))
