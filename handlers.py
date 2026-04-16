@@ -10,6 +10,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from models import (
     get_watches_for_chat,
     set_or_update_watch,
+    ensure_watch,
     get_watch,
     WATCHES,
     save_state,
@@ -25,7 +26,7 @@ from util import (
 logger = logging.getLogger(__name__)
 router = Router()
 
-PENDING_THRESHOLD: Dict[int, Dict] = {}
+PENDING_THRESHOLD: Dict[int, str] = {}
 PENDING_RENAME: Dict[int, str] = {}
 
 # ================= UI =================
@@ -62,10 +63,7 @@ async def add(c: CallbackQuery):
 
 @router.callback_query(F.data == "help")
 async def help_cb(c: CallbackQuery):
-    await c.message.answer(
-        "ℹ️ Incolla un link Amazon e ti dirò se conviene comprarlo.",
-        reply_markup=kb_only_home(),
-    )
+    await c.message.answer("ℹ️ Incolla un link Amazon", reply_markup=kb_only_home())
     await c.answer()
 
 # ================= ANALISI =================
@@ -80,34 +78,13 @@ async def format_price_card(asin: str, url: str):
     kb = InlineKeyboardBuilder()
 
     if decision == "GOOD":
-        text = (
-            f"🟢 <b>Buon momento per comprare</b>\n\n"
-            f"<b>{name}</b>\n\n"
-            f"💶 €{pdata.price_now:.2f}\n\n"
-            f"È vicino ai prezzi più bassi recenti."
-        )
-        kb.button(text="🛒 Compra", url=affiliate_link_it(asin))
-
-    elif decision == "NORMAL":
-        text = (
-            f"🟡 <b>Prezzo nella norma</b>\n\n"
-            f"<b>{name}</b>\n\n"
-            f"💶 €{pdata.price_now:.2f}\n\n"
-            f"Potrebbe scendere."
-        )
-        kb.button(text="🔔 Avvisami", callback_data=f"watch:{asin}:{suggested}")
+        text = f"🟢 <b>Buon momento</b>\n\n<b>{name}</b>\n💶 €{pdata.price_now:.2f}"
         kb.button(text="🛒 Compra", url=affiliate_link_it(asin))
 
     else:
-        text = (
-            f"🔴 <b>Non è un buon momento</b>\n\n"
-            f"<b>{name}</b>\n\n"
-            f"💶 €{pdata.price_now:.2f}\n\n"
-            f"Questo prodotto si trova spesso a meno.\n"
-            f"Ti conviene aspettare."
-        )
+        text = f"🔴 <b>Meglio aspettare</b>\n\n<b>{name}</b>\n💶 €{pdata.price_now:.2f}"
         kb.button(text="🔔 Avvisami", callback_data=f"watch:{asin}:{suggested}")
-        kb.button(text="🛒 Compra comunque", url=affiliate_link_it(asin))
+        kb.button(text="🛒 Compra", url=affiliate_link_it(asin))
 
     kb.button(text="🏠 Home", callback_data="home")
     kb.adjust(1)
@@ -123,14 +100,11 @@ async def watch(c: CallbackQuery):
 
     kb = InlineKeyboardBuilder()
     kb.button(text="✅ Usa soglia consigliata", callback_data=f"setthr:{asin}:{suggested}")
-    kb.button(text="✏️ Inserisci soglia", callback_data=f"manual:{asin}:{suggested}")
+    kb.button(text="✏️ Inserisci soglia", callback_data=f"manual:{asin}")
     kb.button(text="🏠 Home", callback_data="home")
     kb.adjust(1)
 
-    await c.message.answer(
-        f"🔔 Ti avviso quando scende sotto circa €{suggested:.2f}",
-        reply_markup=kb.as_markup()
-    )
+    await c.message.answer(f"🔔 Ti avviso sotto €{suggested:.2f}", reply_markup=kb.as_markup())
     await c.answer()
 
 @router.callback_query(F.data.startswith("setthr:"))
@@ -140,6 +114,8 @@ async def setthr(c: CallbackQuery):
 
     name = auto_short_name_from_url(f"https://amazon.it/dp/{asin}", asin)
 
+    # 👇 FIX CRITICO
+    ensure_watch(c.message.chat.id, asin, name)
     set_or_update_watch(c.message.chat.id, asin, val, name)
 
     await c.message.answer(f"🔔 Ti avviso sotto €{val:.2f}", reply_markup=kb_only_home())
@@ -147,10 +123,10 @@ async def setthr(c: CallbackQuery):
 
 @router.callback_query(F.data.startswith("manual:"))
 async def manual(c: CallbackQuery):
-    _, asin, suggested = c.data.split(":")
-    PENDING_THRESHOLD[c.message.chat.id] = {"asin": asin}
+    _, asin = c.data.split(":")
+    PENDING_THRESHOLD[c.message.chat.id] = asin
 
-    await c.message.answer("✏️ Inserisci la soglia:", reply_markup=kb_only_home())
+    await c.message.answer("✏️ Inserisci soglia:", reply_markup=kb_only_home())
     await c.answer()
 
 # ================= INPUT =================
@@ -162,7 +138,7 @@ async def handle_message(m: Message):
 
     # soglia manuale
     if chat_id in PENDING_THRESHOLD:
-        data = PENDING_THRESHOLD.pop(chat_id)
+        asin = PENDING_THRESHOLD.pop(chat_id)
 
         try:
             value = float(text.replace(",", "."))
@@ -170,9 +146,10 @@ async def handle_message(m: Message):
             await m.answer("Numero non valido", reply_markup=kb_only_home())
             return
 
-        asin = data["asin"]
         name = auto_short_name_from_url(f"https://amazon.it/dp/{asin}", asin)
 
+        # 👇 FIX CRITICO
+        ensure_watch(chat_id, asin, name)
         set_or_update_watch(chat_id, asin, value, name)
 
         await m.answer(f"🔔 Ti avviso sotto €{value:.2f}", reply_markup=kb_only_home())
@@ -203,12 +180,74 @@ async def list_cb(c: CallbackQuery):
         return
 
     text = "📋 <b>Prodotti monitorati</b>\n\n"
+    kb = InlineKeyboardBuilder()
 
     for w in tracked:
         name = w.get("name") or "Prodotto"
         thr = w.get("threshold")
+        asin = w["asin"]
 
         text += f"• {name} → €{thr:.2f}\n"
+        kb.button(text=name, callback_data=f"manage:{asin}")
 
-    await c.message.edit_text(text, reply_markup=kb_home(), parse_mode="HTML")
+    kb.button(text="🏠 Home", callback_data="home")
+    kb.adjust(1)
+
+    await c.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
     await c.answer()
+
+# ================= MANAGE =================
+
+@router.callback_query(F.data.startswith("manage:"))
+async def manage(c: CallbackQuery):
+    asin = c.data.split(":")[1]
+    watch = get_watch(c.message.chat.id, asin)
+
+    name = watch.get("name") if watch else "Prodotto"
+    thr = watch.get("threshold") if watch else 0
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✏️ Rinomina", callback_data=f"rename:{asin}")
+    kb.button(text="🗑️ Rimuovi", callback_data=f"delete:{asin}")
+    kb.button(text="🏠 Home", callback_data="home")
+    kb.adjust(1)
+
+    await c.message.edit_text(f"<b>{name}</b>\n🎯 €{thr:.2f}", reply_markup=kb.as_markup(), parse_mode="HTML")
+    await c.answer()
+
+# ================= DELETE =================
+
+@router.callback_query(F.data.startswith("delete:"))
+async def delete(c: CallbackQuery):
+    asin = c.data.split(":")[1]
+    chat_id = c.message.chat.id
+
+    WATCHES[chat_id] = [w for w in WATCHES.get(chat_id, []) if w["asin"] != asin]
+    save_state()
+
+    await c.message.answer("🗑️ Rimosso", reply_markup=kb_only_home())
+    await c.answer()
+
+# ================= RENAME =================
+
+@router.callback_query(F.data.startswith("rename:"))
+async def rename(c: CallbackQuery):
+    asin = c.data.split(":")[1]
+    PENDING_RENAME[c.message.chat.id] = asin
+
+    await c.message.answer("✏️ Nuovo nome:", reply_markup=kb_only_home())
+    await c.answer()
+
+@router.message()
+async def rename_handler(m: Message):
+    chat_id = m.chat.id
+
+    if chat_id in PENDING_RENAME:
+        asin = PENDING_RENAME.pop(chat_id)
+
+        watch = get_watch(chat_id, asin)
+        thr = watch.get("threshold") if watch else None
+
+        set_or_update_watch(chat_id, asin, thr, m.text)
+
+        await m.answer("✅ Nome aggiornato", reply_markup=kb_only_home())
