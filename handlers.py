@@ -208,8 +208,8 @@ async def cb_delete(c: CallbackQuery):
     await c.message.answer("🗑️ Eliminato", reply_markup=kb_home())
     await c.answer()
 
-@router.callback_query(F.data.startswith("setauto:"))
-async def cb_setauto(c: CallbackQuery):
+@router.callback_query(F.data.startswith("force:"))
+async def cb_force(c: CallbackQuery):
     _, asin, val = c.data.split(":")
     thr = float(val)
     chat_id = c.message.chat.id
@@ -226,7 +226,7 @@ async def cb_setauto(c: CallbackQuery):
     set_or_update_watch(chat_id, asin, thr, name)
 
     await c.message.answer(
-        f"🔔 Ti avviso sotto €{thr:.2f}",
+        f"🔔 Ok, ti avviso sotto €{thr:.2f}",
         reply_markup=kb_home()
     )
 
@@ -289,13 +289,33 @@ async def handle_message(m: Message):
         if not name:
             name = title or f"Prodotto {asin}"
 
-        set_or_update_watch(chat_id, asin, value, name)
+        pdata = await get_price_data(asin)
+recommended = round(pdata.lowest_90 * 1.10, 2)
 
-        await m.answer(
-            f"🔔 Ti avviso sotto €{value:.2f}",
-            reply_markup=kb_home()
-        )
-        return
+# 👉 soglia troppo bassa → warning
+if value < pdata.lowest_90 * 0.7:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Usa comunque questa soglia", callback_data=f"force:{asin}:{value}")
+    kb.button(text="↩️ Torna indietro", callback_data=f"watch:{asin}")
+    kb.button(text="🏠 Home", callback_data="home")
+    kb.adjust(1)
+
+    await m.answer(
+        f"⚠️ Questa soglia è molto difficile da raggiungere.\n\n"
+        f"Negli ultimi mesi il prezzo più basso è stato circa €{pdata.lowest_90:.2f}.\n\n"
+        f"Vuoi comunque usarla?",
+        reply_markup=kb.as_markup()
+    )
+    return
+
+# 👉 soglia ok → salva subito
+set_or_update_watch(chat_id, asin, value, name)
+
+await m.answer(
+    f"🔔 Ti avviso sotto €{value:.2f}",
+    reply_markup=kb_home()
+)
+return
 
     # link
     if "http" in text:
