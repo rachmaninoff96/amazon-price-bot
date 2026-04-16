@@ -23,7 +23,8 @@ from util import (
     auto_short_name_from_url,
     expand_amazon_url,
     suggest_thresholds,
-    get_amazon_title,  # 👈 IMPORTANTE
+    get_amazon_title,
+    simple_price_decision,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,14 +65,28 @@ def kb_product_actions(asin: str):
 async def format_price_card(asin: str, url: str) -> str:
     pdata = await get_price_data(asin)
 
-    # 🔥 FIX NOME
+    # decision logic
+    state, _ = simple_price_decision(pdata.price_now, pdata.lowest_90)
+
+    if state == "GOOD":
+        header = "🟢 Ottimo prezzo"
+        desc = "È vicino ai minimi recenti.\nSe ti serve, è un buon momento per acquistare."
+    elif state == "NORMAL":
+        header = "🟡 Prezzo nella norma"
+        desc = "Non è un affare, ma nemmeno alto.\nSe puoi aspettare, potrebbe scendere."
+    else:
+        header = "🔴 Prezzo alto"
+        desc = f"Negli ultimi mesi si è trovato a circa €{pdata.lowest_90:.2f}.\nConviene aspettare."
+
+    # nome prodotto (NON TOCCARE PIÙ QUESTA LOGICA)
     title = await get_amazon_title(url)
     name = title or find_name_for_asin(asin) or auto_short_name_from_url(url, asin)
 
     txt = (
-        f"🛒 <b>{name}</b>\n\n"
-        f"💶 Prezzo attuale: <b>€{pdata.price_now:.2f}</b>\n"
-        f"📉 Minimo 90 giorni: <b>€{pdata.lowest_90:.2f}</b>\n\n"
+        f"{header}\n\n"
+        f"<b>{name}</b>\n"
+        f"💶 €{pdata.price_now:.2f}\n\n"
+        f"{desc}"
     )
 
     return txt
@@ -118,6 +133,14 @@ async def cb_home(c: CallbackQuery):
     )
     await c.answer()
 
+@router.callback_query(F.data == "help")
+async def cb_help(c: CallbackQuery):
+    await c.message.answer(
+        "ℹ️ Incolla un link Amazon.\nTi dirò se conviene e potrai monitorarlo.",
+        reply_markup=kb_home(),
+    )
+    await c.answer()
+
 @router.callback_query(F.data == "add")
 async def cb_add(c: CallbackQuery):
     await c.message.answer("📎 Invia link Amazon", reply_markup=kb_back_home())
@@ -152,17 +175,19 @@ async def cb_manage(c: CallbackQuery):
 @router.callback_query(F.data.startswith("watch:"))
 async def cb_watch(c: CallbackQuery):
     asin = c.data.split(":")[1]
+    chat_id = c.message.chat.id
 
     pdata = await get_price_data(asin)
     thr = round(pdata.lowest_90 * 1.10, 2)
 
-    title = await get_amazon_title(f"https://amazon.it/dp/{asin}")
-    name = title or f"Prodotto {asin}"
+    # NON sovrascrivere nome!
+    ensure_watch(chat_id, asin)
+    set_or_update_watch(chat_id, asin, thr)
 
-    ensure_watch(c.message.chat.id, asin, name)
-    set_or_update_watch(c.message.chat.id, asin, thr, name)
-
-    await c.message.answer(f"🔔 Ti avviso sotto €{thr:.2f}", reply_markup=kb_home())
+    await c.message.answer(
+        f"🔔 Ti avviso quando scende sotto circa €{thr:.2f}",
+        reply_markup=kb_home()
+    )
     await c.answer()
 
 @router.callback_query(F.data.startswith("delete:"))
