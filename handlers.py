@@ -292,7 +292,7 @@ async def handle_message(m: Message):
         pdata = await get_price_data(asin)
 
         # controllo soglia assurda
-        if value < pdata.lowest_90 * 0.7:
+        if value < pdata.lowest_90 * 0.9:
             kb = InlineKeyboardBuilder()
             kb.button(text="✅ Usa comunque", callback_data=f"force:{asin}:{value}")
             kb.button(text="↩️ Torna indietro", callback_data=f"watch:{asin}")
