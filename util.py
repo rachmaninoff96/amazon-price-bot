@@ -169,73 +169,7 @@ def mock_prices_from_asin(asin: str) -> PriceData:
         advice="",
     )
 
-# ================= PUBLIC =================
 
-async def get_price_data(asin: str) -> PriceData:
-    now = time.time()
-
-    if asin in _PRICE_CACHE:
-        ts, data = _PRICE_CACHE[asin]
-        if now - ts < PRICE_CACHE_TTL_SECONDS:
-            return data
-
-    if USE_KEEPA and KEEPA_API_KEY:
-        try:
-            logger.warning("USE_KEEPA=True | TRYING KEEPA...")
-
-            url = f"https://api.keepa.com/product?key={KEEPA_API_KEY}&domain=8&asin={asin}&stats=90"
-
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=10) as resp:
-                    data = await resp.json()
-
-            products = data.get("products", [])
-            if not products:
-                raise Exception("No product")
-
-            product = products[0]
-            stats = product.get("stats", {})
-
-            def pick_amazon(x):
-                if isinstance(x, list) and len(x) > 0:
-                    val = x[0]
-                    if isinstance(val, (int, float)) and val > 0:
-                        return val
-                return None
-
-            current = pick_amazon(stats.get("current"))
-            min90 = pick_amazon(stats.get("min"))
-            max90 = pick_amazon(stats.get("max"))
-            avg90 = pick_amazon(stats.get("avg"))
-
-            if not current or not min90:
-                raise Exception("Invalid stats")
-
-            result = PriceData(
-                price_now=current / 100,
-                lowest_90=min90 / 100,
-                avg_90=(avg90 / 100) if avg90 else current / 100,
-                max_90=(max90 / 100) if max90 else current / 100,
-                forecast_7d=current / 100,
-                lo_7d=min90 / 100,
-                hi_7d=max90 / 100,
-                likely_days=3,
-                state="REAL",
-                advice="",
-            )
-
-            _PRICE_CACHE[asin] = (now, result)
-
-            logger.warning(f"KEEPA OK: {result.price_now}€")
-            return result
-
-        except Exception as e:
-            logger.warning(f"KEEPA ERROR: {e}")
-
-    result = mock_prices_from_asin(asin)
-    _PRICE_CACHE[asin] = (now, result)
-    logger.warning("USING MOCK DATA")
-    return result
 
 # ================= AFFILIATE =================
 
