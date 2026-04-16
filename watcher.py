@@ -10,13 +10,6 @@ from util import get_price_data, affiliate_link_it
 logger = logging.getLogger(__name__)
 
 
-def _cb_continua(asin: str):
-    return f"continue:{asin}"
-
-
-def _cb_new_threshold(asin: str):
-    return f"newthr:{asin}"
-
 
 def _cb_delete(asin: str):
     return f"delete:{asin}"
@@ -25,8 +18,7 @@ def _cb_delete(asin: str):
 def watcher_notification_keyboard(asin: str):
     kb = InlineKeyboardBuilder()
     kb.button(text="🛒 Acquista su Amazon", url=affiliate_link_it(asin))
-    kb.button(text="🔄 Continua a monitorare", callback_data=_cb_continua(asin))
-    kb.button(text="⚙️ Imposta nuova soglia", callback_data=_cb_new_threshold(asin))
+    kb.button(text="⚙️ Modifica soglia", callback_data=f"setmanual:{asin}")
     kb.button(text="🗑️ Rimuovi", callback_data=_cb_delete(asin))
     kb.button(text="🏠 Home", callback_data="home")
     kb.adjust(1)
