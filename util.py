@@ -50,8 +50,7 @@ async def get_keepa_data(asin: str) -> Optional[KeepaStats90]:
         "key": KEEPA_API_KEY,
         "domain": 8,
         "asin": asin,
-        "history": 1,
-        "days": 90,
+        "stats": 90,   # 🔥 fondamentale
     }
 
     try:
@@ -64,38 +63,26 @@ async def get_keepa_data(asin: str) -> Optional[KeepaStats90]:
             return None
 
         p = products[0]
-        csv = p.get("csv", [])
+        stats = p.get("stats")
 
-        if not csv or not isinstance(csv, list):
+        if not stats:
             return None
 
-        # Amazon price = index 0
-        series = csv[0] if len(csv) > 0 else []
+        # ⚠️ valori in centesimi → /100
+        current = stats.get("current", [None])[1]
+        min90 = stats.get("min", [None, None])[1]
+        max90 = stats.get("max", [None, None])[1]
+        avg90 = stats.get("avg", [None, None])[1]
 
-        if not series or len(series) < 2:
+        if not all([current, min90, avg90]):
             return None
-
-        prices = []
-
-        for i in range(1, len(series), 2):
-            val = series[i]
-            if val and val > 0:
-                prices.append(val / 100)
-
-        if not prices:
-            return None
-
-        current = prices[-1]
-        min90 = min(prices)
-        max90 = max(prices)
-        avg90 = sum(prices) / len(prices)
 
         return KeepaStats90(
-            current=current,
-            min90=min90,
-            avg90=avg90,
-            max90=max90,
-            series="ok",
+            current=current / 100,
+            min90=min90 / 100,
+            avg90=avg90 / 100,
+            max90=(max90 / 100) if max90 else current / 100,
+            series="stats",
         )
 
     except Exception as e:
