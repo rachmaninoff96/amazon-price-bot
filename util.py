@@ -50,8 +50,13 @@ async def get_keepa_data(asin: str) -> Optional[KeepaStats90]:
         "key": KEEPA_API_KEY,
         "domain": 8,
         "asin": asin,
-        "stats": 90,   # 🔥 fondamentale
+        "stats": 90,
     }
+
+    def extract_price(x):
+        if isinstance(x, list) and len(x) > 1:
+            return x[1]
+        return None
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -68,11 +73,10 @@ async def get_keepa_data(asin: str) -> Optional[KeepaStats90]:
         if not stats:
             return None
 
-        # ⚠️ valori in centesimi → /100
-        current = stats.get("current", [None])[1]
-        min90 = stats.get("min", [None, None])[1]
-        max90 = stats.get("max", [None, None])[1]
-        avg90 = stats.get("avg", [None, None])[1]
+        current = extract_price(stats.get("current"))
+        min90 = extract_price(stats.get("min"))
+        max90 = extract_price(stats.get("max"))
+        avg90 = extract_price(stats.get("avg"))
 
         if not all([current, min90, avg90]):
             return None
