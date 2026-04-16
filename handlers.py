@@ -280,6 +280,16 @@ async def handle_message(m: Message):
             await m.answer("⚠️ Inserisci un numero valido")
             return
 
+        pdata = await get_price_data(asin)
+
+        # 🔥 controllo intelligente soglia (90%)
+        if value < pdata.lowest_90 * 0.9:
+            await m.answer(
+                "⚠️ Questa soglia è molto difficile da raggiungere.\n"
+                "Negli ultimi mesi non è mai sceso così tanto."
+            )
+            return
+
         url = f"https://amazon.it/dp/{asin}"
         title = await get_amazon_title(url)
 
@@ -289,24 +299,6 @@ async def handle_message(m: Message):
         if not name:
             name = title or f"Prodotto {asin}"
 
-        pdata = await get_price_data(asin)
-
-        # controllo soglia assurda
-        if value < pdata.lowest_90 * 0.9:
-            kb = InlineKeyboardBuilder()
-            kb.button(text="✅ Usa comunque", callback_data=f"force:{asin}:{value}")
-            kb.button(text="↩️ Torna indietro", callback_data=f"watch:{asin}")
-            kb.button(text="🏠 Home", callback_data="home")
-            kb.adjust(1)
-
-            await m.answer(
-                f"⚠️ Questa soglia è molto difficile da raggiungere.\n\n"
-                f"Minimo recente: €{pdata.lowest_90:.2f}\n\n"
-                f"Vuoi comunque usarla?",
-                reply_markup=kb.as_markup()
-            )
-            return
-
         set_or_update_watch(chat_id, asin, value, name)
 
         await m.answer(
@@ -315,16 +307,17 @@ async def handle_message(m: Message):
         )
         return
 
-    # link (DEVE stare qui, NON indentato sotto altro)
-    # 👇 intercetta numeri "a caso" (utente non ha cliccato bottone)
-if re.match(r"^\d+[.,]?\d*$", text):
-    await m.answer(
-        "⚠️ Per inserire una soglia devi prima cliccare su\n"
-        "✏️ <b>Inserisci soglia manuale</b>",
-        reply_markup=kb_back_home(),
-        parse_mode="HTML"
-    )
-    return
+    # 👇 intercetta numeri senza bottone (UX fix)
+    if re.match(r"^\d+[.,]?\d*$", text):
+        await m.answer(
+            "⚠️ Per inserire una soglia devi prima cliccare su\n"
+            "✏️ <b>Inserisci soglia manuale</b>",
+            reply_markup=kb_back_home(),
+            parse_mode="HTML"
+        )
+        return
+
+    # link
     if "http" in text:
         url = await expand_amazon_url(text)
         m_asin = re.search(r"(?:dp|gp/product)/([A-Z0-9]{10})", url, re.I)
@@ -341,5 +334,4 @@ if re.match(r"^\d+[.,]?\d*$", text):
             )
             return
 
-    # fallback
     await m.answer("Incolla un link Amazon 🙂", reply_markup=kb_home())
