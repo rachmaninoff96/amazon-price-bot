@@ -44,58 +44,81 @@ class KeepaStats90:
 
 # ================= KEEPA =================
 
-async def get_keepa_data(asin: str) -> Optional[KeepaStats90]:
-    url = "https://api.keepa.com/product"
-    params = {
-        "key": KEEPA_API_KEY,
-        "domain": 8,
-        "asin": asin,
-        "stats": 90,
-    }
+async def get_price_data(asin: str) -> PriceData:
+    # cache
+    now = time.time()
+    if asin in _PRICE_CACHE:
+        ts, data = _PRICE_CACHE[asin]
+        if now - ts < PRICE_CACHE_TTL_SECONDS:
+            return data
 
-    def safe_extract(x):
-        # prende QUALSIASI formato e prova a tirare fuori un numero
-        if isinstance(x, (int, float)):
-            return x
-        if isinstance(x, list):
-            for el in reversed(x):
-                if isinstance(el, (int, float)) and el > 0:
-                    return el
-        return None
+    # 👉 USA KEEPA SE ATTIVO
+    if USE_KEEPA and KEEPA_API_KEY:
+        try:
+            logger.warning("USE_KEEPA=True | TRYING KEEPA...")
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=10) as resp:
-                data = await resp.json()
+            url = f"https://api.keepa.com/product?key={KEEPA_API_KEY}&domain=8&asin={asin}&stats=90"
 
-        products = data.get("products", [])
-        if not products:
-            return None
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as resp:
+                    data = await resp.json()
 
-        stats = products[0].get("stats")
-        if not stats:
-            return None
+            products = data.get("products", [])
+            if not products:
+                logger.warning("KEEPA RESULT: no products")
+                raise Exception("No product")
 
-        current = safe_extract(stats.get("current"))
-        min90 = safe_extract(stats.get("min"))
-        max90 = safe_extract(stats.get("max"))
-        avg90 = safe_extract(stats.get("avg"))
+            product = products[0]
+            stats = product.get("stats", {})
 
-        # se manca qualcosa → fallback
-        if not current or not min90 or not avg90:
-            return None
+            # 🔥 funzione per prendere il prezzo AMAZON (indice 0)
+            def pick_amazon(x):
+                if isinstance(x, list) and len(x) > 0:
+                    val = x[0]
+                    if isinstance(val, (int, float)) and val > 0:
+                        return val
+                return None
 
-        return KeepaStats90(
-            current=current / 100,
-            min90=min90 / 100,
-            avg90=avg90 / 100,
-            max90=(max90 / 100) if max90 else current / 100,
-            series="stats",
-        )
+            current = pick_amazon(stats.get("current"))
+            min90 = pick_amazon(stats.get("min"))
+            max90 = pick_amazon(stats.get("max"))
+            avg90 = pick_amazon(stats.get("avg"))
 
-    except Exception as e:
-        logger.warning(f"KEEPA ERROR: {e}")
-        return None
+            if not current or not min90:
+                logger.warning("KEEPA RESULT: dati insufficienti")
+                raise Exception("Invalid stats")
+
+            price_now = current / 100
+            lowest_90 = min90 / 100
+            avg_90 = avg90 / 100 if avg90 else price_now
+            max_90 = max90 / 100 if max90 else price_now
+
+            result = PriceData(
+                price_now=price_now,
+                lowest_90=lowest_90,
+                avg_90=avg_90,
+                max_90=max_90,
+                forecast_7d=price_now,
+                lo_7d=lowest_90,
+                hi_7d=max_90,
+                likely_days=3,
+                state="REAL",
+                advice="",
+            )
+
+            _PRICE_CACHE[asin] = (now, result)
+
+            logger.warning(f"KEEPA OK: {price_now}€")
+            return result
+
+        except Exception as e:
+            logger.warning(f"KEEPA ERROR: {e}")
+            logger.warning("USING MOCK DATA")
+
+    # 👉 fallback mock
+    result = mock_prices_from_asin(asin)
+    _PRICE_CACHE[asin] = (now, result)
+    return result
 
 # ================= TITLE AMAZON =================
 
