@@ -232,6 +232,19 @@ async def cb_setauto(c: CallbackQuery):
 
     await c.answer()
 
+@router.callback_query(F.data.startswith("setmanual:"))
+async def cb_setmanual(c: CallbackQuery):
+    asin = c.data.split(":")[1]
+
+    PENDING_THRESHOLD[c.message.chat.id] = asin
+
+    await c.message.answer(
+        "✏️ Inserisci il prezzo sotto cui vuoi essere avvisato (es. 79.90):",
+        reply_markup=kb_back_home()
+    )
+
+    await c.answer()
+
 @router.callback_query(F.data.startswith("rename:"))
 async def cb_rename(c: CallbackQuery):
     asin = c.data.split(":")[1]
@@ -256,6 +269,33 @@ async def handle_message(m: Message):
 
         await m.answer("✅ Nome aggiornato", reply_markup=kb_home())
         return
+
+# soglia manuale
+if chat_id in PENDING_THRESHOLD:
+    asin = PENDING_THRESHOLD.pop(chat_id)
+
+    try:
+        value = float(text.replace(",", "."))
+    except ValueError:
+        await m.answer("⚠️ Inserisci un numero valido")
+        return
+
+    url = f"https://amazon.it/dp/{asin}"
+    title = await get_amazon_title(url)
+
+    watch = get_watch(chat_id, asin)
+    name = watch.get("name") if watch else None
+
+    if not name:
+        name = title or f"Prodotto {asin}"
+
+    set_or_update_watch(chat_id, asin, value, name)
+
+    await m.answer(
+        f"🔔 Ti avviso sotto €{value:.2f}",
+        reply_markup=kb_home()
+    )
+    return
 
     # link
     if "http" in text:
