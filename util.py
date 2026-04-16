@@ -175,33 +175,70 @@ def mock_prices_from_asin(asin: str) -> PriceData:
 # ================= PUBLIC =================
 
 async def get_price_data(asin: str) -> PriceData:
-    logger.warning(f"USE_KEEPA={USE_KEEPA} | KEY_PRESENT={bool(KEEPA_API_KEY)}")
+    now = time.time()
+
+    if asin in _PRICE_CACHE:
+        ts, data = _PRICE_CACHE[asin]
+        if now - ts < PRICE_CACHE_TTL_SECONDS:
+            return data
 
     if USE_KEEPA and KEEPA_API_KEY:
-        logger.warning("TRYING KEEPA...")
+        try:
+            logger.warning("USE_KEEPA=True | TRYING KEEPA...")
 
-        
-        logger.warning(f"KEEPA RESULT: {k}")
+            url = f"https://api.keepa.com/product?key={KEEPA_API_KEY}&domain=8&asin={asin}&stats=90"
 
-        if k and k.current and k.min90 and k.avg90:
-            logger.warning("USING KEEPA DATA")
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as resp:
+                    data = await resp.json()
 
-            return PriceData(
-                price_now=k.current,
-                lowest_90=k.min90,
-                avg_90=k.avg90,
-                max_90=k.max90 or k.current,
-                forecast_7d=k.current,
-                lo_7d=k.current,
-                hi_7d=k.current,
+            products = data.get("products", [])
+            if not products:
+                raise Exception("No product")
+
+            product = products[0]
+            stats = product.get("stats", {})
+
+            def pick_amazon(x):
+                if isinstance(x, list) and len(x) > 0:
+                    val = x[0]
+                    if isinstance(val, (int, float)) and val > 0:
+                        return val
+                return None
+
+            current = pick_amazon(stats.get("current"))
+            min90 = pick_amazon(stats.get("min"))
+            max90 = pick_amazon(stats.get("max"))
+            avg90 = pick_amazon(stats.get("avg"))
+
+            if not current or not min90:
+                raise Exception("Invalid stats")
+
+            result = PriceData(
+                price_now=current / 100,
+                lowest_90=min90 / 100,
+                avg_90=(avg90 / 100) if avg90 else current / 100,
+                max_90=(max90 / 100) if max90 else current / 100,
+                forecast_7d=current / 100,
+                lo_7d=min90 / 100,
+                hi_7d=max90 / 100,
                 likely_days=3,
-                state="LIVE",
+                state="REAL",
                 advice="",
             )
 
-    logger.warning("USING MOCK DATA")
+            _PRICE_CACHE[asin] = (now, result)
 
-    return mock_prices_from_asin(asin)
+            logger.warning(f"KEEPA OK: {result.price_now}€")
+            return result
+
+        except Exception as e:
+            logger.warning(f"KEEPA ERROR: {e}")
+
+    result = mock_prices_from_asin(asin)
+    _PRICE_CACHE[asin] = (now, result)
+    logger.warning("USING MOCK DATA")
+    return result
 
 # ================= AFFILIATE =================
 
