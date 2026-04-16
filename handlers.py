@@ -384,15 +384,7 @@ async def handle_message(m: Message):
         )
         return
 
-    # intercetta numeri senza bottone (UX fix)
-    if re.match(r"^\d+[.,]?\d*$", text):
-        await m.answer(
-            "⚠️ Per inserire una soglia devi prima cliccare su\n"
-            "✏️ <b>Inserisci soglia manuale</b>",
-            reply_markup=kb_back_home(),
-            parse_mode="HTML"
-        )
-        return
+
 
     # link amazon
     if "http" in text:
