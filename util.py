@@ -53,12 +53,11 @@ async def get_price_data(asin: str) -> PriceData:
         if now - ts < PRICE_CACHE_TTL_SECONDS:
             return data
 
-    # usa Keepa
     if USE_KEEPA and KEEPA_API_KEY:
         try:
-            logger.warning("USE_KEEPA=True | TRYING KEEPA...")
+            logger.warning("TRYING REAL KEEPA...")
 
-            url = f"https://api.keepa.com/product?key={KEEPA_API_KEY}&domain=8&asin={asin}&stats=90"
+            url = f"https://api.keepa.com/product?key={KEEPA_API_KEY}&domain=8&asin={asin}&stats=90&history=1"
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, timeout=10) as resp:
@@ -66,32 +65,36 @@ async def get_price_data(asin: str) -> PriceData:
 
             products = data.get("products", [])
             if not products:
-                raise Exception("No product")
+                raise Exception("No product returned")
 
             product = products[0]
-            stats = product.get("stats", {})
 
-            # 🔥 prende il primo prezzo valido (Amazon o marketplace)
-            def pick_price(x):
-                if isinstance(x, list):
-                    for val in x:
-                        if isinstance(val, (int, float)) and val > 0:
-                            return val
-                return None
+            # 🔥 PREZZO ATTUALE (robusto)
+            csv = product.get("csv", [])
+            if not csv or len(csv) < 2:
+                raise Exception("No CSV data")
 
-            current = pick_price(stats.get("current"))
-            min90 = pick_price(stats.get("min"))
-            max90 = pick_price(stats.get("max"))
-            avg90 = pick_price(stats.get("avg"))
+            price_series = csv[1]  # Amazon price history
+            if not price_series:
+                raise Exception("Empty price history")
 
-            if not current or not min90:
-                raise Exception("Invalid stats")
+            # ultimi prezzi (formato: [time, price, time, price...])
+            prices = price_series[1::2]
+            prices = [p for p in prices if p > 0]
+
+            if not prices:
+                raise Exception("No valid prices")
+
+            current = prices[-1]
+            min90 = min(prices[-100:])  # approx ultimi 90gg
+            max90 = max(prices[-100:])
+            avg90 = sum(prices[-100:]) / len(prices[-100:])
 
             result = PriceData(
                 price_now=current / 100,
                 lowest_90=min90 / 100,
-                avg_90=(avg90 / 100) if avg90 else current / 100,
-                max_90=(max90 / 100) if max90 else current / 100,
+                avg_90=avg90 / 100,
+                max_90=max90 / 100,
                 forecast_7d=current / 100,
                 lo_7d=min90 / 100,
                 hi_7d=max90 / 100,
@@ -108,7 +111,7 @@ async def get_price_data(asin: str) -> PriceData:
         except Exception as e:
             logger.warning(f"KEEPA ERROR: {e}")
 
-    # fallback mock
+    # fallback
     result = mock_prices_from_asin(asin)
     _PRICE_CACHE[asin] = (now, result)
     logger.warning("USING MOCK DATA")
