@@ -316,6 +316,15 @@ async def handle_message(m: Message):
         return
 
     # link (DEVE stare qui, NON indentato sotto altro)
+    # 👇 intercetta numeri "a caso" (utente non ha cliccato bottone)
+if re.match(r"^\d+[.,]?\d*$", text):
+    await m.answer(
+        "⚠️ Per inserire una soglia devi prima cliccare su\n"
+        "✏️ <b>Inserisci soglia manuale</b>",
+        reply_markup=kb_back_home(),
+        parse_mode="HTML"
+    )
+    return
     if "http" in text:
         url = await expand_amazon_url(text)
         m_asin = re.search(r"(?:dp|gp/product)/([A-Z0-9]{10})", url, re.I)
