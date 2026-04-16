@@ -137,10 +137,17 @@ def mock_prices_from_asin(asin: str) -> PriceData:
 # ================= PUBLIC =================
 
 async def get_price_data(asin: str) -> PriceData:
+    logger.warning(f"USE_KEEPA={USE_KEEPA} | KEY_PRESENT={bool(KEEPA_API_KEY)}")
+
     if USE_KEEPA and KEEPA_API_KEY:
+        logger.warning("TRYING KEEPA...")
+
         k = await get_keepa_data(asin)
+        logger.warning(f"KEEPA RESULT: {k}")
 
         if k and k.current and k.min90 and k.avg90:
+            logger.warning("USING KEEPA DATA")
+
             return PriceData(
                 price_now=k.current,
                 lowest_90=k.min90,
@@ -154,7 +161,8 @@ async def get_price_data(asin: str) -> PriceData:
                 advice="",
             )
 
-    # fallback
+    logger.warning("USING MOCK DATA")
+
     return mock_prices_from_asin(asin)
 
 # ================= AFFILIATE =================
