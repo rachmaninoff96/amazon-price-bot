@@ -208,11 +208,14 @@ async def cb_delete(c: CallbackQuery):
     await c.message.answer("🗑️ Eliminato", reply_markup=kb_home())
     await c.answer()
 
-@router.callback_query(F.data.startswith("force:"))
-async def cb_force(c: CallbackQuery):
+@router.callback_query(F.data.startswith("setauto:"))
+async def cb_setauto(c: CallbackQuery):
     _, asin, val = c.data.split(":")
     thr = float(val)
     chat_id = c.message.chat.id
+
+    # 🔥 FIX BLOCCO
+    PENDING_THRESHOLD.pop(chat_id, None)
 
     url = f"https://amazon.it/dp/{asin}"
     title = await get_amazon_title(url)
@@ -226,7 +229,7 @@ async def cb_force(c: CallbackQuery):
     set_or_update_watch(chat_id, asin, thr, name)
 
     await c.message.answer(
-        f"🔔 Ok, ti avviso sotto €{thr:.2f}",
+        f"🔔 Ti avviso sotto €{thr:.2f}",
         reply_markup=kb_home()
     )
 
@@ -282,12 +285,14 @@ async def handle_message(m: Message):
 
         pdata = await get_price_data(asin)
 
-        # controllo intelligente soglia (90%)
-        if value < pdata.lowest_90 * 0.9:
+        recommended = pdata.lowest_90 * 1.10
+
+        # controllo intelligente rispetto alla soglia consigliata
+        if value < recommended * 0.9:
             kb = InlineKeyboardBuilder()
             kb.button(
                 text="✅ Usa soglia consigliata",
-                callback_data=f"setauto:{asin}:{round(pdata.lowest_90 * 1.1, 2)}"
+                callback_data=f"setauto:{asin}:{round(recommended, 2)}"
             )
             kb.button(
                 text="✏️ Inserisci nuova soglia",
@@ -297,9 +302,11 @@ async def handle_message(m: Message):
             kb.adjust(1)
 
             await m.answer(
-                "⚠️ Questa soglia è molto difficile da raggiungere.\n"
-                "Negli ultimi mesi non è mai sceso così tanto.\n\n"
-                "Vuoi usare la soglia consigliata oppure inserirne un’altra?",
+                f"⚠️ Questa soglia è molto bassa rispetto allo storico.\n\n"
+                f"📉 Minimo recente: €{pdata.lowest_90:.2f}\n"
+                f"💡 Consigliata: ~€{recommended:.2f}\n\n"
+                f"Potresti NON ricevere notifiche.\n"
+                f"Vuoi comunque usarla?",
                 reply_markup=kb.as_markup()
             )
             return
@@ -315,7 +322,7 @@ async def handle_message(m: Message):
 
         set_or_update_watch(chat_id, asin, value, name)
 
-        # svuota stato SOLO quando la soglia è valida
+        # svuota stato SOLO quando valido
         PENDING_THRESHOLD.pop(chat_id, None)
 
         await m.answer(
