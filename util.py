@@ -180,7 +180,7 @@ async def get_price_data(asin: str) -> PriceData:
     if USE_KEEPA and KEEPA_API_KEY:
         logger.warning("TRYING KEEPA...")
 
-        k = await get_keepa_data(asin)
+        
         logger.warning(f"KEEPA RESULT: {k}")
 
         if k and k.current and k.min90 and k.avg90:
