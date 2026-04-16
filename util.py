@@ -45,38 +45,58 @@ class KeepaStats90:
 # ================= KEEPA =================
 
 async def get_keepa_data(asin: str) -> Optional[KeepaStats90]:
-    if not KEEPA_API_KEY:
-        return None
-
-    url = f"https://api.keepa.com/product?key={KEEPA_API_KEY}&domain=8&asin={asin}&stats=90"
+    url = "https://api.keepa.com/product"
+    params = {
+        "key": KEEPA_API_KEY,
+        "domain": 8,
+        "asin": asin,
+        "history": 1,
+        "days": 90,
+    }
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as resp:
+            async with session.get(url, params=params, timeout=10) as resp:
                 data = await resp.json()
 
-                products = data.get("products")
-                if not products:
-                    return None
+        products = data.get("products", [])
+        if not products:
+            return None
 
-                p = products[0]
-                stats = p.get("stats", {})
+        p = products[0]
+        csv = p.get("csv", [])
 
-                current = stats.get("current", [None])[1]
-                avg90 = stats.get("avg90", [None])[1]
-                min90 = stats.get("min90", [None])[1]
-                max90 = stats.get("max90", [None])[1]
+        if not csv or not isinstance(csv, list):
+            return None
 
-                def conv(x):
-                    return round(x / 100, 2) if x else None
+        # Amazon price = index 0
+        series = csv[0] if len(csv) > 0 else []
 
-                return KeepaStats90(
-                    current=conv(current),
-                    min90=conv(min90),
-                    avg90=conv(avg90),
-                    max90=conv(max90),
-                    series=""
-                )
+        if not series or len(series) < 2:
+            return None
+
+        prices = []
+
+        for i in range(1, len(series), 2):
+            val = series[i]
+            if val and val > 0:
+                prices.append(val / 100)
+
+        if not prices:
+            return None
+
+        current = prices[-1]
+        min90 = min(prices)
+        max90 = max(prices)
+        avg90 = sum(prices) / len(prices)
+
+        return KeepaStats90(
+            current=current,
+            min90=min90,
+            avg90=avg90,
+            max90=max90,
+            series="ok",
+        )
 
     except Exception as e:
         logger.warning(f"KEEPA ERROR: {e}")
