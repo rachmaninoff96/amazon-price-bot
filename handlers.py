@@ -181,7 +181,12 @@ async def start(m: Message):
 @router.callback_query(F.data == "home")
 async def cb_home(c: CallbackQuery):
     await c.message.edit_text(
-        "🏠 <b>Home</b>\n\nIncolla un link Amazon",
+        "🏠 <b>TrustPrice</b>\n\n"
+        "👋 Incolla un link Amazon per iniziare\n\n"
+        "Ti mostro subito:\n"
+        "💶 Prezzo attuale\n"
+        "📊 Se conviene comprare o aspettare\n\n"
+        "🔔 Puoi anche impostare un prezzo e ricevere una notifica quando scende",
         reply_markup=kb_home(),
         parse_mode="HTML",
     )
@@ -404,16 +409,26 @@ async def handle_message(m: Message):
         url = await expand_amazon_url(text)
         m_asin = re.search(r"(?:dp|gp/product)/([A-Z0-9]{10})", url, re.I)
 
-        if m_asin:
-            asin = m_asin.group(1)
+    if m_asin:
+        asin = m_asin.group(1)
 
-            card = await format_price_card(asin, url)
+        title = await get_amazon_title(url)
 
+        if not title:
             await m.answer(
-                card,
-                reply_markup=kb_product_actions(asin),
-                parse_mode="HTML",
+                "❌ Non riesco a leggere questo link Amazon.\n\n"
+                "👉 Controlla che sia corretto oppure prova con un altro prodotto.",
+                reply_markup=kb_home()
             )
             return
+
+        card = await format_price_card(asin, url)
+
+        await m.answer(
+            card,
+            reply_markup=kb_product_actions(asin),
+            parse_mode="HTML",
+        )
+        return
 
     await m.answer("Incolla un link Amazon 🙂", reply_markup=kb_home())
