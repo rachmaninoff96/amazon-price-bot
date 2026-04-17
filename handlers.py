@@ -189,7 +189,11 @@ async def cb_home(c: CallbackQuery):
 @router.callback_query(F.data == "help")
 async def cb_help(c: CallbackQuery):
     await c.message.answer(
-        "ℹ️ Incolla un link Amazon.\nTi dirò se conviene e potrai monitorarlo.",
+        "👋 Incolla un link Amazon per iniziare\n\n"
+        "Ti mostro subito:\n"
+        "💶 Prezzo attuale\n"
+        "📊 Se conviene comprare o aspettare\n\n"
+        "🔔 Imposta un prezzo e ricevi una notifica quando scende",
         reply_markup=kb_home(),
     )
     await c.answer()
@@ -230,7 +234,10 @@ async def cb_watch(c: CallbackQuery):
     asin = c.data.split(":")[1]
 
     pdata = await get_price_data(asin)
-    thr = round(pdata.lowest_90 * 1.10, 2)
+
+    # 🔥 usa soglia intelligente
+    smart_threshold = float(pdata.advice) if pdata.advice else None
+    thr = smart_threshold if smart_threshold else round(pdata.lowest_90 * 1.05, 2)
 
     # 👉 NON salviamo ancora nulla
     # 👉 mostriamo scelta
@@ -338,7 +345,8 @@ async def handle_message(m: Message):
 
         pdata = await get_price_data(asin)
 
-        recommended = pdata.lowest_90 * 1.10
+        smart_threshold = float(pdata.advice) if pdata.advice else None
+        recommended = smart_threshold if smart_threshold else pdata.lowest_90 * 1.05
 
         # controllo intelligente rispetto alla soglia consigliata
         if value < recommended * 0.9:

@@ -85,7 +85,7 @@ async def get_price_data(asin: str) -> PriceData:
             if not prices:
                 raise Exception("No valid prices")
 
-            # 🔥 NUOVA SOGLIA STATISTICA
+            # 🔥 SOGLIA STATISTICA
             smart_threshold = None
             try:
                 smart_threshold = suggest_threshold_statistical(price_series)
@@ -93,12 +93,13 @@ async def get_price_data(asin: str) -> PriceData:
             except Exception as e:
                 logger.warning(f"THRESHOLD ERROR: {e}")
 
-
+            # 🔥 STATISTICHE BASE
             current = prices[-1]
-            min90 = min(prices[-100:])  # approx ultimi 90gg
+            min90 = min(prices[-100:])
             max90 = max(prices[-100:])
             avg90 = sum(prices[-100:]) / len(prices[-100:])
 
+            # 🔥 RESULT
             result = PriceData(
                 price_now=current / 100,
                 lowest_90=min90 / 100,
@@ -109,7 +110,7 @@ async def get_price_data(asin: str) -> PriceData:
                 hi_7d=max90 / 100,
                 likely_days=3,
                 state="REAL",
-                advice="",
+                advice=str(smart_threshold) if smart_threshold is not None else "",
             )
 
             _PRICE_CACHE[asin] = (now, result)
@@ -239,7 +240,6 @@ def suggest_threshold_statistical(price_series):
     price_series: lista Keepa [time, price, time, price...]
     """
 
-    import time
 
     # separa
     times = price_series[0::2]
