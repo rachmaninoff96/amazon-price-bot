@@ -31,7 +31,7 @@ class PriceData:
     hi_7d: float
     likely_days: int
     state: str
-    advice: str
+    advice: Optional[float]
 
 
 @dataclass(frozen=True)
@@ -110,7 +110,7 @@ async def get_price_data(asin: str) -> PriceData:
                 hi_7d=max90 / 100,
                 likely_days=3,
                 state="REAL",
-                advice=str(smart_threshold) if smart_threshold is not None else "",
+                advice=smart_threshold,
             )
 
             _PRICE_CACHE[asin] = (now, result)
@@ -176,7 +176,7 @@ def mock_prices_from_asin(asin: str) -> PriceData:
         hi_7d=price_now,
         likely_days=3,
         state="MOCK",
-        advice="",
+        advice=None,
     )
 
 

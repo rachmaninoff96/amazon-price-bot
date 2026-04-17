@@ -131,7 +131,8 @@ async def format_price_card(asin: str, url: str) -> str:
     else:
         header = "🔴 Prezzo alto"
         desc = (
-            f"Negli ultimi mesi è sceso fino a €{pdata.lowest_90:.2f}.\n"
+            f"Minimo registrato: €{pdata.lowest_90:.2f} (raro)\n"
+            f"Prezzo buono tipico: ~€{float(pdata.advice) if pdata.advice else round(pdata.lowest_90 * 1.10, 2):.2f}\n\n"
             "👉 Conviene aspettare."
         )
 
@@ -236,7 +237,7 @@ async def cb_watch(c: CallbackQuery):
     pdata = await get_price_data(asin)
 
     # 🔥 usa soglia intelligente
-    smart_threshold = float(pdata.advice) if pdata.advice else None
+    smart_threshold = pdata.advice
     thr = smart_threshold if smart_threshold else round(pdata.lowest_90 * 1.05, 2)
 
     # 👉 NON salviamo ancora nulla
@@ -301,8 +302,11 @@ async def cb_setmanual(c: CallbackQuery):
 
     PENDING_THRESHOLD[c.message.chat.id] = asin
 
+    pdata = await get_price_data(asin)
+    example_price = round(pdata.price_now * 0.8, 2)
+
     await c.message.answer(
-        "✏️ Inserisci il prezzo sotto cui vuoi essere avvisato (es. 79.90):",
+        f"✏️ Inserisci il prezzo sotto cui vuoi essere avvisato (es. {example_price:.2f}):",
         reply_markup=kb_back_home()
     )
 
@@ -364,9 +368,10 @@ async def handle_message(m: Message):
 
             await m.answer(
                 f"⚠️ Questa soglia è molto bassa rispetto allo storico.\n\n"
-                f"📉 Minimo recente: €{pdata.lowest_90:.2f}\n"
-                f"💡 Consigliata: ~€{recommended:.2f}\n\n"
-                f"Potresti NON ricevere notifiche.\n"
+                f"📉 Minimo registrato: €{pdata.lowest_90:.2f} (raro)\n"
+                f"📊 Prezzo realistico quando scende: ~€{recommended:.2f}\n\n"
+                f"💡 Quel minimo viene raggiunto solo per brevi periodi.\n"
+                f"👉 Con questa soglia potresti NON ricevere notifiche.\n\n"
                 f"Vuoi comunque usarla?",
                 reply_markup=kb.as_markup()
             )
