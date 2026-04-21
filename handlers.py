@@ -138,6 +138,14 @@ async def format_price_card(asin: str, url: str) -> str:
             f"📉 Dovrebbe scendere di circa {abs(diff_perc):.0f}%.\n"
             "👉 Meglio aspettare."
         )
+    txt = (
+        f"{header}\n\n"
+        f"<b>{name}</b>\n"
+        f"💶 €{pdata.price_now:.2f}\n\n"
+        f"{desc}"
+    )
+
+    return txt
 
 # ================= LIST =================
 
