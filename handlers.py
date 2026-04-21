@@ -62,36 +62,46 @@ def kb_product_actions(asin: str):
 
 # ================= FORMATTER =================
 
-def smart_price_decision(price_now: float, lowest_90: float, avg_90: float):
-    if not price_now or not lowest_90:
-        return "NORMAL", ""
+def smart_price_decision(price_now: float, threshold: float):
+    if not price_now or not threshold:
+        return "NORMAL"
 
-    ratio = price_now / lowest_90
-    spread = (avg_90 - lowest_90) / lowest_90 if lowest_90 > 0 else 0
-
-    if ratio <= 1.15:
-        if spread < 0.10:
-            return "BUY", "stabile"
-        else:
-            return "BUY", "volatile"
-
-    elif ratio <= 1.35:
-        if spread > 0.25:
-            return "NORMAL", "volatile"
-        else:
-            return "NORMAL", "stabile"
-
+    if price_now <= threshold:
+        return "BUY"
+    elif price_now <= threshold * 1.15:
+        return "NORMAL"
     else:
-        return "HIGH", ""
+        return "HIGH"
 
 async def format_price_card(asin: str, url: str) -> str:
     pdata = await get_price_data(asin)
 
     # nuova logica
-    state, mode = smart_price_decision(
+    base = float(pdata.advice) if pdata.advice else pdata.lowest_90 * 1.10
+
+    # regole intelligenti
+    min_delta = pdata.price_now * 0.08
+    max_delta = pdata.price_now * 0.40
+
+    raw_threshold = base
+
+    # forza sotto prezzo attuale
+    if raw_threshold >= pdata.price_now:
+        raw_threshold = pdata.price_now * 0.92
+
+    # distanza minima
+    if pdata.price_now - raw_threshold < min_delta:
+        raw_threshold = pdata.price_now - min_delta
+
+    # evita troppo basso
+    if pdata.price_now - raw_threshold > max_delta:
+        raw_threshold = pdata.price_now - max_delta
+
+    threshold = round(raw_threshold, 2)
+
+    state = smart_price_decision(
         pdata.price_now,
-        pdata.lowest_90,
-        pdata.avg_90
+        threshold
     )
 
     # nome prodotto (NON TOCCARE)
@@ -100,50 +110,34 @@ async def format_price_card(asin: str, url: str) -> str:
 
     # ===== MESSAGGI =====
 
+    diff = pdata.price_now - threshold
+    diff_perc = (diff / pdata.price_now) * 100 if pdata.price_now else 0
+
     if state == "BUY":
-        if mode == "stabile":
-            header = "🟢 Ottimo prezzo"
-            desc = (
-                "È vicino ai minimi e il prezzo è abbastanza stabile.\n"
-                "👉 Se ti serve, conviene comprarlo ora."
-            )
-        else:
-            header = "🟢 Buon prezzo"
-            desc = (
-                "È vicino ai minimi recenti, ma questo prodotto oscilla nel tempo.\n"
-                "👉 Potrebbe scendere ancora, ma è comunque un buon prezzo."
-            )
+        header = "🟢 Ottimo momento per comprare"
+        desc = (
+            f"💶 Prezzo attuale: €{pdata.price_now:.2f}\n"
+            f"📉 Prezzo buono: ~€{threshold:.2f}\n\n"
+            f"🔥 Sei sotto la soglia di circa {diff_perc:.0f}%.\n"
+            "👉 Conviene approfittarne ora."
+        )
 
     elif state == "NORMAL":
-        if mode == "volatile":
-            header = "🟡 Prezzo nella norma"
-            desc = (
-                "Questo prodotto varia spesso di prezzo.\n"
-                "👉 Se non hai fretta, può valere la pena aspettare."
-            )
-        else:
-            header = "🟡 Prezzo nella norma"
-            desc = (
-                "Non è un affare, ma nemmeno alto.\n"
-                "👉 Se puoi aspettare, potrebbe scendere."
-            )
+        header = "🟡 Prezzo nella norma"
+        desc = (
+            f"💶 Prezzo attuale: €{pdata.price_now:.2f}\n"
+            f"📊 Prezzo interessante: ~€{threshold:.2f}\n\n"
+            "👉 Può scendere ancora, puoi aspettare."
+        )
 
     else:
         header = "🔴 Prezzo alto"
         desc = (
-            f"Minimo registrato: €{pdata.lowest_90:.2f} (raro)\n"
-            f"Prezzo buono tipico: ~€{float(pdata.advice) if pdata.advice else round(pdata.lowest_90 * 1.10, 2):.2f}\n\n"
-            "👉 Conviene aspettare."
+            f"💶 Prezzo attuale: €{pdata.price_now:.2f}\n"
+            f"📉 Prezzo buono: ~€{threshold:.2f}\n\n"
+            f"📉 Dovrebbe scendere di circa {abs(diff_perc):.0f}%.\n"
+            "👉 Meglio aspettare."
         )
-
-    txt = (
-        f"{header}\n\n"
-        f"<b>{name}</b>\n"
-        f"💶 €{pdata.price_now:.2f}\n\n"
-        f"{desc}"
-    )
-
-    return txt
 
 # ================= LIST =================
 
@@ -242,9 +236,32 @@ async def cb_watch(c: CallbackQuery):
     pdata = await get_price_data(asin)
 
     # 🔥 usa soglia intelligente
-    smart_threshold = pdata.advice
-    thr = smart_threshold if smart_threshold else round(pdata.lowest_90 * 1.05, 2)
+    base = float(pdata.advice) if pdata.advice else pdata.lowest_90 * 1.10
 
+    min_delta = pdata.price_now * 0.08
+    max_delta = pdata.price_now * 0.40
+
+    raw_threshold = base
+
+    if raw_threshold >= pdata.price_now:
+        raw_threshold = pdata.price_now * 0.92
+
+    if pdata.price_now - raw_threshold < min_delta:
+        raw_threshold = pdata.price_now - min_delta
+
+    if pdata.price_now - raw_threshold > max_delta:
+        raw_threshold = pdata.price_now - max_delta
+
+    thr = round(raw_threshold, 2)
+    # 🔥 se è già sotto soglia → compra subito
+    if pdata.price_now <= thr:
+        await c.message.answer(
+            f"🟢 Il prezzo è già molto buono (€{pdata.price_now:.2f})\n\n"
+            "👉 Ti conviene comprarlo ora, non serve impostare una notifica.",
+            reply_markup=kb_home()
+        )
+        await c.answer()
+        return
     # 👉 NON salviamo ancora nulla
     # 👉 mostriamo scelta
 
@@ -329,7 +346,9 @@ async def cb_rename(c: CallbackQuery):
 async def handle_message(m: Message):
     text = (m.text or "").strip()
     chat_id = m.chat.id
-
+    # reset pending se arriva un link
+    if "http" in text:
+        PENDING_THRESHOLD.pop(chat_id, None)
     # rename
     if chat_id in PENDING_RENAME:
         asin = PENDING_RENAME.pop(chat_id)
@@ -357,7 +376,7 @@ async def handle_message(m: Message):
         smart_threshold = float(pdata.advice) if pdata.advice else None
         recommended = smart_threshold if smart_threshold else pdata.lowest_90 * 1.05
 
-        # controllo intelligente rispetto alla soglia consigliata
+        # ⚠️ soglia troppo bassa
         if value < recommended * 0.9:
             kb = InlineKeyboardBuilder()
             kb.button(
@@ -372,10 +391,9 @@ async def handle_message(m: Message):
             kb.adjust(1)
 
             await m.answer(
-                f"⚠️ Questa soglia è molto bassa rispetto allo storico.\n\n"
-                f"📉 Minimo registrato: €{pdata.lowest_90:.2f} (raro)\n"
-                f"📊 Prezzo realistico quando scende: ~€{recommended:.2f}\n\n"
-                f"💡 Quel minimo viene raggiunto solo per brevi periodi.\n"
+                f"⚠️ Questa soglia è molto difficile da raggiungere.\n\n"
+                f"💶 Prezzo attuale: €{pdata.price_now:.2f}\n"
+                f"📊 Prezzo realistico: ~€{recommended:.2f}\n\n"
                 f"👉 Con questa soglia potresti NON ricevere notifiche.\n\n"
                 f"Vuoi comunque usarla?",
                 reply_markup=kb.as_markup()
@@ -409,26 +427,37 @@ async def handle_message(m: Message):
         url = await expand_amazon_url(text)
         m_asin = re.search(r"(?:dp|gp/product)/([A-Z0-9]{10})", url, re.I)
 
-    if m_asin:
-        asin = m_asin.group(1)
+        if m_asin:
+            asin = m_asin.group(1)
 
-        title = await get_amazon_title(url)
+            title = await get_amazon_title(url)
 
-        if not title:
+            if not title:
+                await m.answer(
+                    "❌ Non riesco a leggere questo link Amazon.\n\n"
+                    "👉 Controlla che sia corretto oppure prova con un altro prodotto.",
+                    reply_markup=kb_home()
+                )
+                return
+
+            card = await format_price_card(asin, url)
+
             await m.answer(
-                "❌ Non riesco a leggere questo link Amazon.\n\n"
-                "👉 Controlla che sia corretto oppure prova con un altro prodotto.",
-                reply_markup=kb_home()
+                card,
+                reply_markup=kb_product_actions(asin),
+                parse_mode="HTML",
             )
             return
 
-        card = await format_price_card(asin, url)
-
+    # numero senza contesto
+    if re.fullmatch(r"\d+([.,]\d+)?", text):
         await m.answer(
-            card,
-            reply_markup=kb_product_actions(asin),
-            parse_mode="HTML",
+            "⚠️ Prima seleziona un prodotto con 'Avvisami', poi inserisci il prezzo.",
+            reply_markup=kb_home()
         )
         return
 
-    await m.answer("Incolla un link Amazon 🙂", reply_markup=kb_home())
+    await m.answer(
+        "👋 Incolla un link Amazon per iniziare",
+        reply_markup=kb_home()
+    )
