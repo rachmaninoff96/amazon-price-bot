@@ -430,15 +430,6 @@ async def handle_message(m: Message):
         if m_asin:
             asin = m_asin.group(1)
 
-            title = await get_amazon_title(url)
-
-            if not title:
-                await m.answer(
-                    "❌ Non riesco a leggere questo link Amazon.\n\n"
-                    "👉 Controlla che sia corretto oppure prova con un altro prodotto.",
-                    reply_markup=kb_home()
-                )
-                return
 
             card = await format_price_card(asin, url)
 
