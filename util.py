@@ -256,7 +256,6 @@ def suggest_threshold_statistical(price_series):
     price_series: lista Keepa [time, price, time, price...]
     """
 
-
     # separa
     times = price_series[0::2]
     prices = price_series[1::2]
@@ -267,31 +266,23 @@ def suggest_threshold_statistical(price_series):
     if not data:
         return None
 
-    # ---- FILTRO OUTLIER ----
+    # 🔥 USA TUTTI I DATI (NO FILTRO OUTLIER)
     values = sorted([p for p, _ in data])
-    n = len(values)
-
-    p5 = values[int(n * 0.05)]
-    p95 = values[int(n * 0.95)]
-
-    filtered = [(p, t) for p, t in data if p5 <= p <= p95]
-
-    values = sorted([p for p, _ in filtered])
     n = len(values)
 
     if n < 10:
         return None
 
     # ---- PERCENTILI ----
-    p20 = values[int(n * 0.2)]
-    p30 = values[int(n * 0.3)]
+    p10 = values[int(n * 0.1)]
+    p25 = values[int(n * 0.25)]
 
     # ---- RECENCY CHECK ----
-    threshold_base = p20
+    threshold_base = p10
 
     last_seen_days = None
 
-    for p, t in reversed(filtered):
+    for p, t in reversed(data):
         if abs(p - threshold_base) / threshold_base < 0.02:
 
             keepa_epoch = 21564000
@@ -305,9 +296,9 @@ def suggest_threshold_statistical(price_series):
 
     # ---- DECISIONE ----
     if last_seen_days <= 45:
-        threshold = p20
+        threshold = p10
     else:
-        threshold = p30
+        threshold = p25
 
     return round(threshold / 100, 2)
 
