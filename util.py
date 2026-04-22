@@ -69,7 +69,6 @@ async def get_price_data(asin: str) -> PriceData:
 
             product = products[0]
 
-            # 🔥 PREZZO ATTUALE + SERIE
             csv = product.get("csv", [])
             if not csv or len(csv) < 2:
                 raise Exception("No CSV data")
@@ -78,14 +77,37 @@ async def get_price_data(asin: str) -> PriceData:
             if not price_series:
                 raise Exception("Empty price history")
 
-            # ultimi prezzi (formato: [time, price, time, price...])
+            # ===== DEBUG =====
+            print("DEBUG RAW SERIES:", price_series[:20])
+
+            # ===== SPLIT =====
+            times = price_series[0::2]
             prices = price_series[1::2]
-            prices = [p for p in prices if p > 0]
 
-            if not prices:
-                raise Exception("No valid prices")
+            print("TOTAL POINTS:", len(prices))
 
-            # 🔥 SOGLIA STATISTICA
+            # ===== 90 GIORNI REALI =====
+            KEEPA_EPOCH = 21564000  # minuti offset Keepa
+            now_minutes = int(time.time() / 60) - KEEPA_EPOCH
+            cutoff = now_minutes - (90 * 24 * 60)
+
+            filtered_prices = [
+                p for p, t in zip(prices, times)
+                if p > 0 and t >= cutoff
+            ]
+
+            print("FILTERED POINTS:", len(filtered_prices))
+
+            if not filtered_prices:
+                raise Exception("No prices in last 90 days")
+
+            # ===== STATISTICHE =====
+            current = filtered_prices[-1]
+            min90 = min(filtered_prices)
+            max90 = max(filtered_prices)
+            avg90 = sum(filtered_prices) / len(filtered_prices)
+
+            # ===== SOGLIA INTELLIGENTE =====
             smart_threshold = None
             try:
                 smart_threshold = suggest_threshold_statistical(price_series)
@@ -93,13 +115,7 @@ async def get_price_data(asin: str) -> PriceData:
             except Exception as e:
                 logger.warning(f"THRESHOLD ERROR: {e}")
 
-            # 🔥 STATISTICHE BASE
-            current = prices[-1]
-            min90 = min(prices[-100:])
-            max90 = max(prices[-100:])
-            avg90 = sum(prices[-100:]) / len(prices[-100:])
-
-            # 🔥 RESULT
+            # ===== RESULT =====
             result = PriceData(
                 price_now=current / 100,
                 lowest_90=min90 / 100,
@@ -115,7 +131,7 @@ async def get_price_data(asin: str) -> PriceData:
 
             _PRICE_CACHE[asin] = (now, result)
 
-            logger.warning(f"KEEPA OK: {result.price_now}€")
+            logger.warning(f"KEEPA OK: {result.price_now}€ | MIN90: {result.lowest_90}")
             return result
 
         except Exception as e:
