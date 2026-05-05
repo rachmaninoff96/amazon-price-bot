@@ -50,14 +50,32 @@ def kb_back_home():
     kb.adjust(1)
     return kb.as_markup()
 
-def kb_product_actions(asin: str):
+def kb_product_actions(asin: str, state: str, threshold: float):
     kb = InlineKeyboardBuilder()
-    kb.button(text="🛒 Acquista", url=affiliate_link_it(asin))
-    kb.button(text="🔔 Avvisami", callback_data=f"watch:{asin}")
-    kb.button(text="✏️ Rinomina", callback_data=f"rename:{asin}")
-    kb.button(text="🗑️ Elimina", callback_data=f"delete:{asin}")
+
+    # 🟢 OTTIMO PREZZO → compra
+    if state == "BUY":
+        kb.button(text="🛒 Acquista su Amazon", url=affiliate_link_it(asin))
+
+    # 🟡 NORMALE → scelta
+    elif state == "NORMAL":
+        kb.button(text="🛒 Acquista ora", url=affiliate_link_it(asin))
+        kb.button(
+            text=f"🔔 Avvisami a €{threshold:.2f}",
+            callback_data=f"watch:{asin}"
+        )
+
+    # 🔴 ALTO → aspettare
+    else:
+        kb.button(
+            text=f"🔔 Avvisami a €{threshold:.2f}",
+            callback_data=f"watch:{asin}"
+        )
+        kb.button(text="⚙️ Imposta soglia", callback_data=f"setmanual:{asin}")
+
     kb.button(text="🏠 Home", callback_data="home")
     kb.adjust(1)
+
     return kb.as_markup()
 
 # ================= FORMATTER =================
@@ -73,7 +91,7 @@ def smart_price_decision(price_now: float, threshold: float):
     else:
         return "HIGH"
 
-async def format_price_card(asin: str, url: str) -> str:
+async def format_price_card(asin: str, url: str, chat_id: int) -> tuple:
     pdata = await get_price_data(asin)
 
     # nuova logica
@@ -104,6 +122,28 @@ async def format_price_card(asin: str, url: str) -> str:
         threshold
     )
 
+    # 🔥 FIX: se è vicino al minimo reale → forza verde
+    if pdata.price_now <= pdata.lowest_90 * 1.05:
+        state = "BUY"
+
+    # 🔥 PRIORITÀ SOGLIA UTENTE (solo se sensata)
+    user_threshold = None
+
+    try:
+        chat_items = WATCHES.get(chat_id, [])
+        for w in chat_items:
+            if w["asin"] == asin:
+                user_threshold = w.get("threshold")
+                break
+    except Exception:
+        pass
+
+    # applica solo se coerente con la realtà statistica
+    if user_threshold is not None:
+        if user_threshold <= threshold * 1.10:
+            if pdata.price_now <= user_threshold:
+                state = "BUY"
+
     # nome prodotto (NON TOCCARE)
     title = await get_amazon_title(url)
     name = title or find_name_for_asin(asin) or auto_short_name_from_url(url, asin)
@@ -114,29 +154,29 @@ async def format_price_card(asin: str, url: str) -> str:
     diff_perc = (diff / pdata.price_now) * 100 if pdata.price_now else 0
 
     if state == "BUY":
-        header = "🟢 Ottimo momento per comprare"
+        header = "🟢 Ottimo prezzo"
         desc = (
-            f"💶 Prezzo attuale: €{pdata.price_now:.2f}\n"
-            f"📉 Prezzo buono: ~€{threshold:.2f}\n\n"
-            f"🔥 Sei sotto la soglia di circa {diff_perc:.0f}%.\n"
-            "👉 Conviene approfittarne ora."
+            "È sceso sotto la tua soglia.\n\n"
+            "👉 Consiglio: acquistalo ora"
+        ) if (user_threshold is not None and pdata.price_now <= user_threshold) else (
+            "È vicino ai livelli più bassi.\n\n"
+            "👉 È un buon momento per acquistare"
         )
 
     elif state == "NORMAL":
         header = "🟡 Prezzo nella norma"
         desc = (
-            f"💶 Prezzo attuale: €{pdata.price_now:.2f}\n"
-            f"📊 Prezzo interessante: ~€{threshold:.2f}\n\n"
-            "👉 Può scendere ancora, puoi aspettare."
+            "È in linea con il prezzo abituale.\n\n"
+            f"🎯 Prezzo realistico: €{threshold:.2f}\n\n"
+            "👉 Puoi acquistare ora oppure aspettare"
         )
 
     else:
         header = "🔴 Prezzo alto"
         desc = (
-            f"💶 Prezzo attuale: €{pdata.price_now:.2f}\n"
-            f"📉 Prezzo buono: ~€{threshold:.2f}\n\n"
-            f"📉 Dovrebbe scendere di circa {abs(diff_perc):.0f}%.\n"
-            "👉 Meglio aspettare."
+            "Questo prodotto scende spesso a un prezzo più basso.\n\n"
+            f"🎯 Prezzo realistico: €{threshold:.2f}\n\n"
+            "👉 Ti conviene aspettare"
         )
     txt = (
         f"{header}\n\n"
@@ -145,7 +185,7 @@ async def format_price_card(asin: str, url: str) -> str:
         f"{desc}"
     )
 
-    return txt
+    return txt, state, threshold
 
 # ================= LIST =================
 
@@ -228,13 +268,18 @@ async def cb_list(c: CallbackQuery):
 async def cb_manage(c: CallbackQuery):
     asin = c.data.split(":")[1]
 
-    card = await format_price_card(asin, f"https://amazon.it/dp/{asin}")
+    card, state, threshold = await format_price_card(
+        asin,
+        f"https://amazon.it/dp/{asin}",
+        c.message.chat.id
+    )
 
     await c.message.edit_text(
         card,
-        reply_markup=kb_product_actions(asin),
+        reply_markup=kb_product_actions(asin, state, threshold),
         parse_mode="HTML",
     )
+
     await c.answer()
 
 @router.callback_query(F.data.startswith("watch:"))
@@ -280,9 +325,8 @@ async def cb_watch(c: CallbackQuery):
     kb.adjust(1)
 
     await c.message.answer(
-        f"🔔 Ti avviso quando il prezzo torna conveniente\n"
-        f"(circa €{thr:.2f})\n\n"
-        f"Puoi usare questa soglia oppure inserirne una tua.",
+        f"🔔 Ti avviso quando scende a €{thr:.2f}\n\n"
+        "👉 Puoi usare questa soglia oppure impostarne una tua.",
         reply_markup=kb.as_markup()
     )
 
@@ -350,6 +394,32 @@ async def cb_rename(c: CallbackQuery):
     await c.message.answer("✏️ Nuovo nome:", reply_markup=kb_back_home())
     await c.answer()
 
+@router.callback_query(F.data.startswith("confirm:"))
+async def cb_confirm(c: CallbackQuery):
+    _, asin, val = c.data.split(":")
+    value = float(val)
+    chat_id = c.message.chat.id
+
+    url = f"https://amazon.it/dp/{asin}"
+    title = await get_amazon_title(url)
+
+    watch = get_watch(chat_id, asin)
+    name = watch.get("name") if watch else None
+
+    if not name:
+        name = title or f"Prodotto {asin}"
+
+    set_or_update_watch(chat_id, asin, value, name)
+
+    PENDING_THRESHOLD.pop(chat_id, None)
+
+    await c.message.answer(
+        f"🔔 Ti avviso sotto €{value:.2f}",
+        reply_markup=kb_home()
+    )
+
+    await c.answer()
+
 @router.message()
 async def handle_message(m: Message):
     text = (m.text or "").strip()
@@ -384,30 +454,74 @@ async def handle_message(m: Message):
         smart_threshold = float(pdata.advice) if pdata.advice else None
         recommended = smart_threshold if smart_threshold else pdata.lowest_90 * 1.05
 
-        # ⚠️ soglia troppo bassa
+        # 🔥 CASO 1 — soglia troppo bassa
         if value < recommended * 0.9:
             kb = InlineKeyboardBuilder()
             kb.button(
-                text="✅ Usa soglia consigliata",
+                text=f"🔔 Usa €{recommended:.2f}",
                 callback_data=f"setauto:{asin}:{round(recommended, 2)}"
             )
             kb.button(
-                text="✏️ Inserisci nuova soglia",
+                text="✏️ Modifica",
                 callback_data=f"setmanual:{asin}"
             )
-            kb.button(text="🏠 Home", callback_data="home")
+            kb.button(
+                text="✔️ Conferma comunque",
+                callback_data=f"confirm:{asin}:{value}"
+            )
             kb.adjust(1)
 
             await m.answer(
-                f"⚠️ Questa soglia è molto difficile da raggiungere.\n\n"
-                f"💶 Prezzo attuale: €{pdata.price_now:.2f}\n"
-                f"📊 Prezzo realistico: ~€{recommended:.2f}\n\n"
-                f"👉 Con questa soglia potresti NON ricevere notifiche.\n\n"
-                f"Vuoi comunque usarla?",
+                f"⚠️ Soglia molto bassa\n\n"
+                f"Potrebbe non essere mai raggiunta.\n\n"
+                f"🎯 Prezzo realistico: €{recommended:.2f}",
                 reply_markup=kb.as_markup()
             )
             return
 
+        # 🔥 CASO 2 — soglia troppo alta
+        elif value > recommended * 1.25:
+            kb = InlineKeyboardBuilder()
+            kb.button(
+                text=f"🔔 Usa €{recommended:.2f}",
+                callback_data=f"setauto:{asin}:{round(recommended, 2)}"
+            )
+            kb.button(
+                text="✔️ Mantieni la tua",
+                callback_data=f"confirm:{asin}:{value}"
+            )
+            kb.adjust(1)
+
+            await m.answer(
+                f"⚠️ Soglia alta\n\n"
+                f"È sopra il prezzo realistico.\n\n"
+                f"🎯 Prezzo realistico: €{recommended:.2f}",
+                reply_markup=kb.as_markup()
+            )
+            return
+
+        # 🔥 CASO 3 — soglia ok ma migliorabile
+        elif abs(value - recommended) / recommended > 0.1:
+            kb = InlineKeyboardBuilder()
+            kb.button(
+                text=f"🔔 Usa €{recommended:.2f}",
+                callback_data=f"setauto:{asin}:{round(recommended, 2)}"
+            )
+            kb.button(
+                text="✔️ Mantieni la tua",
+                callback_data=f"confirm:{asin}:{value}"
+            )
+            kb.adjust(1)
+
+            await m.answer(
+                f"🟡 Soglia possibile\n\n"
+                f"🎯 Prezzo realistico: €{recommended:.2f}\n\n"
+                f"👉 Ti consiglio questo valore per più probabilità",
+                reply_markup=kb.as_markup()
+            )
+            return
+
+        # ✅ soglia buona
         url = f"https://amazon.it/dp/{asin}"
         title = await get_amazon_title(url)
 
@@ -419,7 +533,6 @@ async def handle_message(m: Message):
 
         set_or_update_watch(chat_id, asin, value, name)
 
-        # svuota stato SOLO quando valido
         PENDING_THRESHOLD.pop(chat_id, None)
 
         await m.answer(
@@ -439,11 +552,11 @@ async def handle_message(m: Message):
             asin = m_asin.group(1)
 
 
-            card = await format_price_card(asin, url)
+            card, state, threshold = await format_price_card(asin, url, chat_id)
 
             await m.answer(
                 card,
-                reply_markup=kb_product_actions(asin),
+                reply_markup=kb_product_actions(asin, state, threshold),
                 parse_mode="HTML",
             )
             return
