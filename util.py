@@ -249,6 +249,33 @@ def auto_short_name_from_url(url: str, asin: str) -> str:
 
     return f"Prodotto {asin}"
 
+def compute_recommended_threshold(pdata) -> float:
+    """
+    Restituisce una soglia coerente e unica
+    da usare in tutto il bot.
+    """
+
+    base = float(pdata.advice) if pdata.advice else pdata.lowest_90 * 1.10
+
+    min_delta = pdata.price_now * 0.08
+    max_delta = pdata.price_now * 0.40
+
+    raw_threshold = base
+
+    # evita soglia sopra prezzo attuale
+    if raw_threshold >= pdata.price_now:
+        raw_threshold = pdata.price_now * 0.92
+
+    # evita differenza troppo piccola
+    if pdata.price_now - raw_threshold < min_delta:
+        raw_threshold = pdata.price_now - min_delta
+
+    # evita differenza irrealistica
+    if pdata.price_now - raw_threshold > max_delta:
+        raw_threshold = pdata.price_now - max_delta
+
+    return round(raw_threshold, 2)
+
 # ================= SUGGEST THRESHOLDS =================
 
 def suggest_threshold_statistical(price_series):

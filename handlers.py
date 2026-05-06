@@ -25,6 +25,7 @@ from util import (
     suggest_thresholds,
     get_amazon_title,
     simple_price_decision,
+    compute_recommended_threshold,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,28 +95,7 @@ def smart_price_decision(price_now: float, threshold: float):
 async def format_price_card(asin: str, url: str, chat_id: int) -> tuple:
     pdata = await get_price_data(asin)
 
-    # nuova logica
-    base = float(pdata.advice) if pdata.advice else pdata.lowest_90 * 1.10
-
-    # regole intelligenti
-    min_delta = pdata.price_now * 0.08
-    max_delta = pdata.price_now * 0.40
-
-    raw_threshold = base
-
-    # forza sotto prezzo attuale
-    if raw_threshold >= pdata.price_now:
-        raw_threshold = pdata.price_now * 0.92
-
-    # distanza minima
-    if pdata.price_now - raw_threshold < min_delta:
-        raw_threshold = pdata.price_now - min_delta
-
-    # evita troppo basso
-    if pdata.price_now - raw_threshold > max_delta:
-        raw_threshold = pdata.price_now - max_delta
-
-    threshold = round(raw_threshold, 2)
+    threshold = compute_recommended_threshold(pdata)
 
     state = smart_price_decision(
         pdata.price_now,
@@ -288,24 +268,8 @@ async def cb_watch(c: CallbackQuery):
 
     pdata = await get_price_data(asin)
 
-    # 🔥 usa soglia intelligente
-    base = float(pdata.advice) if pdata.advice else pdata.lowest_90 * 1.10
+    thr = compute_recommended_threshold(pdata)
 
-    min_delta = pdata.price_now * 0.08
-    max_delta = pdata.price_now * 0.40
-
-    raw_threshold = base
-
-    if raw_threshold >= pdata.price_now:
-        raw_threshold = pdata.price_now * 0.92
-
-    if pdata.price_now - raw_threshold < min_delta:
-        raw_threshold = pdata.price_now - min_delta
-
-    if pdata.price_now - raw_threshold > max_delta:
-        raw_threshold = pdata.price_now - max_delta
-
-    thr = round(raw_threshold, 2)
     # 🔥 se è già sotto soglia → compra subito
     if pdata.price_now <= thr:
         await c.message.answer(
@@ -451,8 +415,7 @@ async def handle_message(m: Message):
 
         pdata = await get_price_data(asin)
 
-        smart_threshold = float(pdata.advice) if pdata.advice else None
-        recommended = smart_threshold if smart_threshold else pdata.lowest_90 * 1.05
+        recommended = compute_recommended_threshold(pdata)
 
         # 🔥 CASO 1 — soglia troppo bassa
         if value < recommended * 0.9:
