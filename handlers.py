@@ -56,7 +56,15 @@ def kb_product_actions(asin: str, state: str, threshold: float):
 
     # 🟢 OTTIMO PREZZO → compra
     if state == "BUY":
-        kb.button(text="🛒 Acquista su Amazon", url=affiliate_link_it(asin))
+        kb.button(
+            text="🛒 Acquista su Amazon",
+            url=affiliate_link_it(asin)
+        )
+
+        kb.button(
+            text="⚙️ Voglio comunque aspettare",
+            callback_data=f"waitanyway:{asin}"
+        )
 
     # 🟡 NORMALE → scelta
     elif state == "NORMAL":
@@ -101,10 +109,6 @@ async def format_price_card(asin: str, url: str, chat_id: int) -> tuple:
         pdata.price_now,
         threshold
     )
-
-    # 🔥 FIX: se è vicino al minimo reale → forza verde
-    if pdata.price_now <= pdata.lowest_90 * 1.05:
-        state = "BUY"
 
     # 🔥 PRIORITÀ SOGLIA UTENTE (solo se sensata)
     user_threshold = None
@@ -258,6 +262,42 @@ async def cb_manage(c: CallbackQuery):
         card,
         reply_markup=kb_product_actions(asin, state, threshold),
         parse_mode="HTML",
+    )
+
+    await c.answer()
+
+@router.callback_query(F.data.startswith("waitanyway:"))
+async def cb_wait_anyway(c: CallbackQuery):
+    asin = c.data.split(":")[1]
+
+    pdata = await get_price_data(asin)
+
+    threshold = compute_recommended_threshold(pdata)
+
+    kb = InlineKeyboardBuilder()
+
+    kb.button(
+        text="🛒 Acquista ora",
+        url=affiliate_link_it(asin)
+    )
+
+    kb.button(
+        text="🔔 Imposta una soglia manuale",
+        callback_data=f"setmanual:{asin}"
+    )
+
+    kb.button(
+        text="🏠 Home",
+        callback_data="home"
+    )
+
+    kb.adjust(1)
+
+    await c.message.answer(
+        "⚠️ Prezzo molto conveniente\n\n"
+        "Questo prodotto è vicino ai prezzi migliori registrati.\n\n"
+        "👉 Aspettare potrebbe non portare un risparmio significativo.",
+        reply_markup=kb.as_markup()
     )
 
     await c.answer()

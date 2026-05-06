@@ -283,50 +283,75 @@ def suggest_threshold_statistical(price_series):
     price_series: lista Keepa [time, price, time, price...]
     """
 
-    # separa
     times = price_series[0::2]
     prices = price_series[1::2]
 
-    # filtra prezzi validi
     data = [(p, t) for p, t in zip(prices, times) if p > 0]
 
     if not data:
         return None
 
-    # 🔥 USA TUTTI I DATI (NO FILTRO OUTLIER)
     values = sorted([p for p, _ in data])
     n = len(values)
 
     if n < 10:
         return None
 
-    # ---- PERCENTILI ----
-    p25 = values[int(n * 0.25)]
+    # ===== STATISTICHE BASE =====
+
+    p10 = values[int(n * 0.10)]
+    p20 = values[int(n * 0.20)]
+    p30 = values[int(n * 0.30)]
     p40 = values[int(n * 0.40)]
-    p50 = values[int(n * 0.50)]  # mediana
+    p50 = values[int(n * 0.50)]
 
-    # ---- BASE REALISTICA ----
-    threshold_base = p40
+    current = values[-1]
+    min_price = values[0]
 
-    last_seen_days = None
+    # ===== RICONOSCIMENTO PREZZI PROMO =====
+    # prezzi entro +15% dal minimo
 
-    for p, t in reversed(data):
-        if abs(p - threshold_base) / threshold_base < 0.02:
+    promo_limit = min_price * 1.15
 
-            keepa_epoch = 21564000
-            t_unix = (t + keepa_epoch) * 60
+    promo_prices = [
+        p for p in values
+        if p <= promo_limit
+    ]
 
-            last_seen_days = (time.time() - t_unix) / 86400
-            break
+    promo_ratio = len(promo_prices) / n
 
-    if last_seen_days is None:
-        last_seen_days = 999
+    # ===== DECISIONE =====
 
-    # ---- DECISIONE ----
-    if last_seen_days <= 30:
-        threshold = p40
+    # CASO 1:
+    # prodotto che va spesso in promo
+    if promo_ratio >= 0.15:
+
+        threshold = max(
+            p20,
+            min_price * 1.10
+        )
+
+    # CASO 2:
+    # prodotto abbastanza stabile
+    elif promo_ratio >= 0.08:
+
+        threshold = p30
+
+    # CASO 3:
+    # quasi mai in sconto
     else:
-        threshold = p50
+
+        threshold = p40
+
+    # ===== SICUREZZE =====
+
+    # evita soglie troppo vicine
+    if current - threshold < current * 0.10:
+        threshold = current * 0.90
+
+    # evita soglie assurde
+    if current - threshold > current * 0.45:
+        threshold = current * 0.55
 
     return round(threshold / 100, 2)
 
