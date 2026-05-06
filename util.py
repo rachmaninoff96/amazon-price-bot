@@ -274,11 +274,12 @@ def suggest_threshold_statistical(price_series):
         return None
 
     # ---- PERCENTILI ----
-    p10 = values[int(n * 0.1)]
     p25 = values[int(n * 0.25)]
+    p40 = values[int(n * 0.40)]
+    p50 = values[int(n * 0.50)]  # mediana
 
-    # ---- RECENCY CHECK ----
-    threshold_base = p10
+    # ---- BASE REALISTICA ----
+    threshold_base = p40
 
     last_seen_days = None
 
@@ -295,10 +296,10 @@ def suggest_threshold_statistical(price_series):
         last_seen_days = 999
 
     # ---- DECISIONE ----
-    if last_seen_days <= 45:
-        threshold = p10
+    if last_seen_days <= 30:
+        threshold = p40
     else:
-        threshold = p25
+        threshold = p50
 
     return round(threshold / 100, 2)
 
