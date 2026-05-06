@@ -109,6 +109,9 @@ async def format_price_card(asin: str, url: str, chat_id: int) -> tuple:
         pdata.price_now,
         threshold
     )
+    # 🔥 vicino al minimo reale recente
+    if pdata.price_now <= pdata.lowest_90 * 1.05:
+        state = "BUY"
 
     # 🔥 PRIORITÀ SOGLIA UTENTE (solo se sensata)
     user_threshold = None
